@@ -1,0 +1,54 @@
+@import "tailwindcss";
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=DM+Mono:wght@400;500&display=swap');
+
+:root {
+  --ino-primary: #0EA5A4;
+  --ino-primary-dark: #1E293B;
+  --ino-accent: #F59E0B;
+  --ino-success: #22C55E;
+  --ino-warning: #F59E0B;
+  --ino-danger: #EF4444;
+  --ino-info: #3B82F6;
+  --ino-bg: #F9FAFB;
+  --ino-card: #FFFFFF;
+  --ino-border: #E5E7EB;
+  --ino-text: #18212F;
+  --ino-text-secondary: #374151;
+  --ino-text-muted: #6B7280;
+}
+
+body {
+  font-family: 'DM Sans', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  background-color: var(--ino-bg);
+  color: var(--ino-text);
+}
+
+.mono {
+  font-family: 'DM Mono', monospace;
+}
+
+/* Custom logo classes */
+.ino-logo-hexagon {
+  width: 48px;
+  height: 48px;
+  background-color: var(--ino-primary-dark);
+  clip-path: polygon(50% 0%, 100% 25%, 100% 75%, 50% 100%, 0% 75%, 0% 25%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+}
+
+.ino-logo-cube {
+  width: 14px;
+  height: 14px;
+  background-color: var(--ino-accent);
+  transform: rotate(45deg);
+  box-shadow: 0 0 4px rgba(0, 0, 0, 0.3);
+}
+
+/* Hexagon clip path for decorative elements */
+.hexagon {
+  clip-path: polygon(50% 0%, 100% 25%, 100% 75%, 50% 100%, 0% 75%, 0% 25%);
+}
+
