@@ -1,23 +1,20 @@
-# INO ERP
+<div align="center">
+<img width="1200" height="475" alt="GHBanner" src="https://ai.google.dev/static/site-assets/images/share-ais-513315318.png" />
+</div>
 
-Aplikasi ERP (Produk, Stok, PO, SO, BOM, Kas, dll) untuk UMKM. React + Vite,
-awalnya digenerate lewat Google AI Studio.
+# Run and deploy your AI Studio app
 
-## Jalankan Lokal
+This contains everything you need to run your app locally.
 
-**Prasyarat:** Node.js
+View your app in AI Studio: https://ai.studio/apps/a65f8a54-c1d7-4dc7-bbcc-422a3587ded7
 
-1. Install dependency: `npm install`
-2. (Opsional) Sambungkan ke Google Sheets sebagai backend — lihat
-   [`GOOGLE_SHEETS_SETUP.md`](./GOOGLE_SHEETS_SETUP.md). Kalau dilewati,
-   aplikasi tetap jalan normal pakai `localStorage` browser.
-3. Jalankan: `npm run dev`
+## Run Locally
 
-## Build Production
+**Prerequisites:**  Node.js
 
-```
-npm run build
-```
 
-Hasil build ada di folder `dist/` — file statis, bisa di-host di mana saja
-(GitHub Pages, Netlify, Vercel, dll).
+1. Install dependencies:
+   `npm install`
+2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
+3. Run the app:
+   `npm run dev`

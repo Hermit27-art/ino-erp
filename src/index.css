@@ -1,6 +1,19 @@
 @import "tailwindcss";
 @import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=DM+Mono:wght@400;500&display=swap');
 
+@theme {
+  --color-primary: #0EA5A4;
+  --color-primary-hover: #0F766E;
+  --color-border: #E2E8F0;
+  --color-text-primary: #1E293B;
+  --color-text-secondary: #64748B;
+  --color-danger: #EF4444;
+  --color-success: #22C55E;
+  --color-warning: #F59E0B;
+  --color-info: #3B82F6;
+  --radius-card: 0.5rem;
+}
+
 :root {
   --ino-primary: #0EA5A4;
   --ino-primary-dark: #1E293B;
@@ -16,6 +29,7 @@
   --ino-text-secondary: #374151;
   --ino-text-muted: #6B7280;
 }
+
 
 body {
   font-family: 'DM Sans', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
