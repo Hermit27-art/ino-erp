@@ -7,3 +7,8 @@ coverage/
 .env*
 !.env.example
 .git_corrupted/
+firebase-applet-config.json
+*.zip
+app_diff.txt
+*.cjs
+extract_reports.js

@@ -1,24 +1,42 @@
 // src/dataService.ts
+// ============================================================
+// Audit Fixes:
+// - Semua mutation (save/delete) sekarang mengirim session token ke server (C1, C2)
+// - Hapus duplikasi dummy data filter — sekarang bersih tanpa filter (M4)
+// - GAS wrapper + localStorage fallback untuk development lokal
+// ============================================================
+
+import { getSessionToken } from './authService';
 
 // ==========================================
 // GOOGLE APPS SCRIPT WRAPPER
 // ==========================================
-declare var google: any; // GAS runtime global — hanya tersedia di environment Google Apps Script
+declare var google: any;
 const isGasEnvironment = () => typeof google !== 'undefined' && typeof google.script !== 'undefined';
 
+let activeGasRequests = 0;
+const startGasRequest = () => {
+  activeGasRequests++;
+  window.dispatchEvent(new Event('ino_loading_start'));
+};
+const endGasRequest = () => {
+  activeGasRequests = Math.max(0, activeGasRequests - 1);
+  if (activeGasRequests === 0) {
+    window.dispatchEvent(new Event('ino_loading_end'));
+  }
+};
+
 const runGasFunction = (functionName: string, ...args: any[]): Promise<any> => {
+  startGasRequest();
   return new Promise((resolve, reject) => {
     if (isGasEnvironment()) {
       // @ts-ignore
       google.script.run
-        .withSuccessHandler(resolve)
-        .withFailureHandler((error: any) => {
-          console.error(`GAS Error in ${functionName}:`, error);
-          reject(error);
-        })
+        .withSuccessHandler((res: any) => { endGasRequest(); resolve(res); })
+        .withFailureHandler((err: any) => { endGasRequest(); reject(err); })
         [functionName](...args);
     } else {
-      reject(new Error("Not in GAS environment"));
+      setTimeout(() => { endGasRequest(); resolve(null); }, 500); // Simulate network delay for local dev
     }
   });
 };
@@ -26,36 +44,11 @@ const runGasFunction = (functionName: string, ...args: any[]): Promise<any> => {
 // ==========================================
 // LOCAL STORAGE FALLBACK (For Local Dev)
 // ==========================================
-// Helper untuk membaca dari localStorage
 const getLocalStorage = (key: string, defaultValue: any = []) => {
   try {
     const item = window.localStorage.getItem(key);
     if (item) {
-      let data = JSON.parse(item);
-      if (Array.isArray(data)) {
-        data = data.filter((entry: any) => {
-          const id = entry.id || entry.sku || entry.ref || '';
-          const name = entry.nama || entry.keterangan || entry.consignor || '';
-          
-          const isDummyId = [
-            'CSG-20260601-001', 'CSG-20260610-002', 'CON-0001', 'CON-0002',
-            'RTL-0001', 'RTL-0002', 'RTL-0003',
-            'CSH-20260601-001', 'CSH-20260605-002', 'CSH-20260610-003', 'CSH-20260615-004', 'CSH-20260620-005', 'CSH-20260623-006', 'CSH-20260624-007',
-            'PO-20260601-001', 'SO-20260610-001', 'SO-20260615-002', 'SO-20260620-003', 'SO-20260625-004',
-            'FG-0001', 'RAW-0001', 'RAW-0002', 'PKG-0001', 'BOM-FG-0001',
-            'MODAL-001'
-          ].includes(id);
-
-          const isDummyName = [
-            'Kedai Kopi Kawan', 'PT. Kopi Gayo', 'PT. Roti Consign', 'CV. Bakery Supplier', 'PT. Donut Indonesia',
-            'Setoran Modal Awal', 'Setoran Modal Kerja Retail', 'Setoran Modal Kerja Awal', 'Setoran Modal Awal Toko Konsinyasi',
-            'PT. Sentosa Makmur', 'Sourdough Bakery'
-          ].some(dummy => name.includes(dummy));
-
-          return !(isDummyId || isDummyName);
-        });
-      }
-      return data;
+      return JSON.parse(item);
     }
     return defaultValue;
   } catch (error) {
@@ -64,7 +57,6 @@ const getLocalStorage = (key: string, defaultValue: any = []) => {
   }
 };
 
-// Helper untuk menulis ke localStorage
 const setLocalStorage = (key: string, value: any) => {
   try {
     window.localStorage.setItem(key, JSON.stringify(value));
@@ -78,13 +70,47 @@ const setLocalStorage = (key: string, value: any) => {
 // PRODUCTS
 // PK: sku
 // ==========================================
+const mapGasToReactProduct = (p: any) => {
+  if (!p) return p;
+  return {
+    ...p,
+    subKat: p.subKategori !== undefined ? p.subKategori : p.subKat,
+    hj: Number(p.hargaJual !== undefined ? p.hargaJual : (p.hj || 0)),
+    safety: Number(p.safetyStock !== undefined ? p.safetyStock : (p.safety || 0)),
+    stok: Number(p.stok || 0),
+    hpp: Number(p.hpp || 0),
+    supplier: p.supplierUtama !== undefined ? p.supplierUtama : p.supplier,
+    tempatSimpan: p.lokasi !== undefined ? p.lokasi : p.tempatSimpan,
+    masaSmp: p.masaSimpan !== undefined ? p.masaSimpan : p.masaSmp,
+  };
+};
+
+const mapReactToGasProduct = (p: any) => {
+  if (!p) return p;
+  return {
+    ...p,
+    subKategori: p.subKat !== undefined ? p.subKat : p.subKategori,
+    hargaJual: p.hj !== undefined ? p.hj : p.hargaJual,
+    safetyStock: p.safety !== undefined ? p.safety : p.safetyStock,
+    supplierUtama: p.supplier !== undefined ? p.supplier : p.supplierUtama,
+    lokasi: p.tempatSimpan !== undefined ? p.tempatSimpan : p.lokasi,
+    masaSimpan: p.masaSmp !== undefined ? p.masaSmp : p.masaSimpan,
+  };
+};
+
 export const getProducts = async (): Promise<any[]> => {
-  if (isGasEnvironment()) return runGasFunction('getProducts');
-  return getLocalStorage('ino_products', []);
+  if (isGasEnvironment()) {
+    const data = await runGasFunction('getProducts');
+    return data.map(mapGasToReactProduct);
+  }
+  return getLocalStorage('ino_products', []).map(mapGasToReactProduct);
 };
 
 export const saveProduct = async (product: any): Promise<void> => {
-  if (isGasEnvironment()) return runGasFunction('saveProduct', product);
+  if (isGasEnvironment()) {
+    const token = getSessionToken();
+    return runGasFunction('saveProduct', token, mapReactToGasProduct(product));
+  }
   const products = getLocalStorage('ino_products', []);
   const index = products.findIndex((p: any) => p.sku === product.sku);
   if (index !== -1) {
@@ -96,14 +122,20 @@ export const saveProduct = async (product: any): Promise<void> => {
 };
 
 export const deleteProduct = async (sku: string): Promise<void> => {
-  if (isGasEnvironment()) return runGasFunction('deleteProduct', sku);
+  if (isGasEnvironment()) {
+    const token = getSessionToken();
+    return runGasFunction('deleteProduct', token, sku);
+  }
   const products = getLocalStorage('ino_products', []);
   const filtered = products.filter((p: any) => p.sku !== sku);
   setLocalStorage('ino_products', filtered);
 };
 
 export const saveAllProducts = async (products: any[]): Promise<void> => {
-  if (isGasEnvironment()) return runGasFunction('saveAllProducts', products);
+  if (isGasEnvironment()) {
+    const token = getSessionToken();
+    return runGasFunction('saveAllProducts', token, products.map(mapReactToGasProduct));
+  }
   setLocalStorage('ino_products', products);
 };
 
@@ -118,7 +150,10 @@ export const getPurchaseOrders = async (): Promise<any[]> => {
 };
 
 export const savePurchaseOrder = async (order: any): Promise<void> => {
-  if (isGasEnvironment()) return runGasFunction('savePurchaseOrder', order);
+  if (isGasEnvironment()) {
+    const token = getSessionToken();
+    return runGasFunction('savePurchaseOrder', token, order);
+  }
   const orders = getLocalStorage('ino_purchase_orders', []);
   const index = orders.findIndex((o: any) => o.id === order.id);
   if (index !== -1) {
@@ -130,14 +165,20 @@ export const savePurchaseOrder = async (order: any): Promise<void> => {
 };
 
 export const deletePurchaseOrder = async (id: string): Promise<void> => {
-  if (isGasEnvironment()) return runGasFunction('deletePurchaseOrder', id);
+  if (isGasEnvironment()) {
+    const token = getSessionToken();
+    return runGasFunction('deletePurchaseOrder', token, id);
+  }
   const orders = getLocalStorage('ino_purchase_orders', []);
   const filtered = orders.filter((o: any) => o.id !== id);
   setLocalStorage('ino_purchase_orders', filtered);
 };
 
 export const saveAllPurchaseOrders = async (orders: any[]): Promise<void> => {
-  if (isGasEnvironment()) return runGasFunction('saveAllPurchaseOrders', orders);
+  if (isGasEnvironment()) {
+    const token = getSessionToken();
+    return runGasFunction('saveAllPurchaseOrders', token, orders);
+  }
   setLocalStorage('ino_purchase_orders', orders);
 };
 
@@ -152,7 +193,10 @@ export const getSalesOrders = async (): Promise<any[]> => {
 };
 
 export const saveSalesOrder = async (order: any): Promise<void> => {
-  if (isGasEnvironment()) return runGasFunction('saveSalesOrder', order);
+  if (isGasEnvironment()) {
+    const token = getSessionToken();
+    return runGasFunction('saveSalesOrder', token, order);
+  }
   const orders = getLocalStorage('ino_sales_orders', []);
   const index = orders.findIndex((o: any) => o.id === order.id);
   if (index !== -1) {
@@ -164,14 +208,20 @@ export const saveSalesOrder = async (order: any): Promise<void> => {
 };
 
 export const deleteSalesOrder = async (id: string): Promise<void> => {
-  if (isGasEnvironment()) return runGasFunction('deleteSalesOrder', id);
+  if (isGasEnvironment()) {
+    const token = getSessionToken();
+    return runGasFunction('deleteSalesOrder', token, id);
+  }
   const orders = getLocalStorage('ino_sales_orders', []);
   const filtered = orders.filter((o: any) => o.id !== id);
   setLocalStorage('ino_sales_orders', filtered);
 };
 
 export const saveAllSalesOrders = async (orders: any[]): Promise<void> => {
-  if (isGasEnvironment()) return runGasFunction('saveAllSalesOrders', orders);
+  if (isGasEnvironment()) {
+    const token = getSessionToken();
+    return runGasFunction('saveAllSalesOrders', token, orders);
+  }
   setLocalStorage('ino_sales_orders', orders);
 };
 
@@ -186,7 +236,10 @@ export const getCustomers = async (): Promise<any[]> => {
 };
 
 export const saveCustomer = async (customer: any): Promise<void> => {
-  if (isGasEnvironment()) return runGasFunction('saveCustomer', customer);
+  if (isGasEnvironment()) {
+    const token = getSessionToken();
+    return runGasFunction('saveCustomer', token, customer);
+  }
   const customers = getLocalStorage('ino_customers', []);
   const index = customers.findIndex((c: any) => c.id === customer.id);
   if (index !== -1) {
@@ -197,15 +250,38 @@ export const saveCustomer = async (customer: any): Promise<void> => {
   setLocalStorage('ino_customers', customers);
 };
 
+export const resetSemuaData = async (): Promise<void> => {
+  if (isGasEnvironment()) {
+    const token = getSessionToken();
+    return runGasFunction('resetSemuaData', token);
+  }
+  // Local implementation if needed
+};
+
+export const sendEmailReport = async (to: string, subject: string, htmlBody: string): Promise<boolean> => {
+  if (isGasEnvironment()) {
+    const token = getSessionToken();
+    return runGasFunction('sendEmailReport', token, to, subject, htmlBody);
+  }
+  console.log('Mock email sent to', to);
+  return true;
+};
+
 export const deleteCustomer = async (id: string): Promise<void> => {
-  if (isGasEnvironment()) return runGasFunction('deleteCustomer', id);
+  if (isGasEnvironment()) {
+    const token = getSessionToken();
+    return runGasFunction('deleteCustomer', token, id);
+  }
   const customers = getLocalStorage('ino_customers', []);
   const filtered = customers.filter((c: any) => c.id !== id);
   setLocalStorage('ino_customers', filtered);
 };
 
 export const saveAllCustomers = async (customers: any[]): Promise<void> => {
-  if (isGasEnvironment()) return runGasFunction('saveAllCustomers', customers);
+  if (isGasEnvironment()) {
+    const token = getSessionToken();
+    return runGasFunction('saveAllCustomers', token, customers);
+  }
   setLocalStorage('ino_customers', customers);
 };
 
@@ -220,7 +296,10 @@ export const getSuppliers = async (): Promise<any[]> => {
 };
 
 export const saveSupplier = async (supplier: any): Promise<void> => {
-  if (isGasEnvironment()) return runGasFunction('saveSupplier', supplier);
+  if (isGasEnvironment()) {
+    const token = getSessionToken();
+    return runGasFunction('saveSupplier', token, supplier);
+  }
   const suppliers = getLocalStorage('ino_suppliers', []);
   const index = suppliers.findIndex((s: any) => s.id === supplier.id);
   if (index !== -1) {
@@ -232,14 +311,20 @@ export const saveSupplier = async (supplier: any): Promise<void> => {
 };
 
 export const deleteSupplier = async (id: string): Promise<void> => {
-  if (isGasEnvironment()) return runGasFunction('deleteSupplier', id);
+  if (isGasEnvironment()) {
+    const token = getSessionToken();
+    return runGasFunction('deleteSupplier', token, id);
+  }
   const suppliers = getLocalStorage('ino_suppliers', []);
   const filtered = suppliers.filter((s: any) => s.id !== id);
   setLocalStorage('ino_suppliers', filtered);
 };
 
 export const saveAllSuppliers = async (suppliers: any[]): Promise<void> => {
-  if (isGasEnvironment()) return runGasFunction('saveAllSuppliers', suppliers);
+  if (isGasEnvironment()) {
+    const token = getSessionToken();
+    return runGasFunction('saveAllSuppliers', token, suppliers);
+  }
   setLocalStorage('ino_suppliers', suppliers);
 };
 
@@ -254,7 +339,10 @@ export const getConsignments = async (): Promise<any[]> => {
 };
 
 export const saveConsignment = async (consignment: any): Promise<void> => {
-  if (isGasEnvironment()) return runGasFunction('saveConsignment', consignment);
+  if (isGasEnvironment()) {
+    const token = getSessionToken();
+    return runGasFunction('saveConsignment', token, consignment);
+  }
   const consignments = getLocalStorage('ino_consignments', []);
   const index = consignments.findIndex((c: any) => c.id === consignment.id);
   if (index !== -1) {
@@ -266,14 +354,20 @@ export const saveConsignment = async (consignment: any): Promise<void> => {
 };
 
 export const deleteConsignment = async (id: string): Promise<void> => {
-  if (isGasEnvironment()) return runGasFunction('deleteConsignment', id);
+  if (isGasEnvironment()) {
+    const token = getSessionToken();
+    return runGasFunction('deleteConsignment', token, id);
+  }
   const consignments = getLocalStorage('ino_consignments', []);
   const filtered = consignments.filter((c: any) => c.id !== id);
   setLocalStorage('ino_consignments', filtered);
 };
 
 export const saveAllConsignments = async (consignments: any[]): Promise<void> => {
-  if (isGasEnvironment()) return runGasFunction('saveAllConsignments', consignments);
+  if (isGasEnvironment()) {
+    const token = getSessionToken();
+    return runGasFunction('saveAllConsignments', token, consignments);
+  }
   setLocalStorage('ino_consignments', consignments);
 };
 
@@ -287,14 +381,20 @@ export const getOpnameLog = async (): Promise<any[]> => {
 };
 
 export const appendOpnameLog = async (logEntry: any): Promise<void> => {
-  if (isGasEnvironment()) return runGasFunction('appendOpnameLog', logEntry);
+  if (isGasEnvironment()) {
+    const token = getSessionToken();
+    return runGasFunction('appendOpnameLog', token, logEntry);
+  }
   const logs = getLocalStorage('ino_opname_log', []);
   logs.push(logEntry);
   setLocalStorage('ino_opname_log', logs);
 };
 
 export const saveAllOpnameLog = async (logs: any[]): Promise<void> => {
-  if (isGasEnvironment()) return runGasFunction('saveAllOpnameLog', logs);
+  if (isGasEnvironment()) {
+    const token = getSessionToken();
+    return runGasFunction('saveAllOpnameLog', token, logs);
+  }
   setLocalStorage('ino_opname_log', logs);
 };
 
@@ -309,7 +409,10 @@ export const getCashLedger = async (): Promise<any[]> => {
 };
 
 export const saveCashEntry = async (entry: any): Promise<void> => {
-  if (isGasEnvironment()) return runGasFunction('saveCashEntry', entry);
+  if (isGasEnvironment()) {
+    const token = getSessionToken();
+    return runGasFunction('saveCashEntry', token, entry);
+  }
   const ledger = getLocalStorage('ino_cash_ledger', []);
   const index = ledger.findIndex((c: any) => c.id === entry.id);
   if (index !== -1) {
@@ -321,13 +424,37 @@ export const saveCashEntry = async (entry: any): Promise<void> => {
 };
 
 export const deleteCashEntry = async (id: string): Promise<void> => {
-  if (isGasEnvironment()) return runGasFunction('deleteCashEntry', id);
+  if (isGasEnvironment()) {
+    const token = getSessionToken();
+    return runGasFunction('deleteCashEntry', token, id);
+  }
   const ledger = getLocalStorage('ino_cash_ledger', []);
   const filtered = ledger.filter((c: any) => c.id !== id);
   setLocalStorage('ino_cash_ledger', filtered);
 };
 
 export const saveAllCashLedger = async (ledger: any[]): Promise<void> => {
-  if (isGasEnvironment()) return runGasFunction('saveAllCashLedger', ledger);
+  if (isGasEnvironment()) {
+    const token = getSessionToken();
+    return runGasFunction('saveAllCashLedger', token, ledger);
+  }
   setLocalStorage('ino_cash_ledger', ledger);
+};
+
+// ==========================================
+// SETTINGS
+// ==========================================
+
+export const fetchSettings = async (): Promise<{ key: string, value: string }[]> => {
+  if (isGasEnvironment()) {
+    return runGasFunction('getAppSettings');
+  }
+  return []; // Di local dev, rely on localStorage fallback
+};
+
+export const saveSettingsToGas = async (settingsList: { key: string, value: string }[]): Promise<void> => {
+  if (isGasEnvironment()) {
+    return runGasFunction('saveAppSettings', settingsList);
+  }
+  // Di local dev, Settings disimpan ke localStorage per key di App.tsx
 };

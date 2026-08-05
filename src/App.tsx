@@ -1,26 +1,30 @@
 import React, { useState, useEffect } from 'react';
+import { useDebounce } from './hooks/useDebounce';
 import { Badge } from "./components/Badge";
 import { EmptyState } from "./components/EmptyState";
 import { CashLedgerTab } from './components/CashLedgerTab';
+import { SettingsTab } from './tabs/SettingsTab';
+import { PurchaseOrderTab } from './tabs/PurchaseOrderTab';
+import { SalesOrderTab } from './tabs/SalesOrderTab';
+import { ReportsTab } from './tabs/ReportsTab';
+import { SearchableSelect } from './components/SearchableSelect';
 import * as XLSX from 'xlsx';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import * as htmlToImage from 'html-to-image';
-import { validateLogin, hashPassword } from './authService';
-import { initAuth, googleSignIn, getAccessToken, logout } from './auth';
-import { getProducts, saveProduct, deleteProduct, saveAllProducts } from './dataService';
+import { loginToServer, getSessionUser, logoutFromServer, hashPassword, type SessionUser } from './authService';
+import { getProducts, saveProduct, deleteProduct, saveAllProducts, sendEmailReport } from './dataService';
 import { savePurchaseOrder, deletePurchaseOrder, saveAllPurchaseOrders } from './dataService';
 import { saveCustomer, deleteCustomer, saveAllCustomers } from "./dataService";
 import { saveSupplier, deleteSupplier, saveAllSuppliers } from "./dataService";
 import { appendOpnameLog, saveAllOpnameLog } from "./dataService";
 import { saveCashEntry, deleteCashEntry, saveAllCashLedger } from "./dataService";
-import { saveSalesOrder, deleteSalesOrder, saveAllSalesOrders } from './dataService';
+import { saveSalesOrder, deleteSalesOrder, saveAllSalesOrders, fetchSettings, saveSettingsToGas } from './dataService';
 import {
   ShoppingCart, LayoutDashboard,
   Package,
   FileText,
   Mail,
-
   Users,
   AlertTriangle,
   TrendingUp,
@@ -39,7 +43,6 @@ import {
   X,
   CornerUpLeft,
   Printer,
-  Eye,
   BookOpen,
   History,
   Settings,
@@ -50,8 +53,10 @@ import {
   Database,
   ChevronDown,
   HelpCircle,
-  Calculator,
-  Building2
+  Building2,
+  Eye,
+  EyeOff,
+  Calculator
 } from 'lucide-react';
 import { Table, THead, TBody, TR, TH, TD } from './components/Table';
 import { TableActions } from './components/TableActions';
@@ -80,32 +85,7 @@ const getLocalStorage = (key: string, defaultValue: any) => {
   try {
     const saved = localStorage.getItem(key);
     if (saved) {
-      let data = JSON.parse(saved);
-      if (Array.isArray(data)) {
-        // Strip out dummy data that might be stuck in user's local storage
-        data = data.filter((item: any) => {
-          const id = item.id || item.sku || item.ref || '';
-          const name = item.nama || item.keterangan || item.consignor || '';
-
-          const isDummyId = [
-            'CSG-20260601-001', 'CSG-20260610-002', 'CON-0001', 'CON-0002',
-            'RTL-0001', 'RTL-0002', 'RTL-0003',
-            'CSH-20260601-001', 'CSH-20260605-002', 'CSH-20260610-003', 'CSH-20260615-004', 'CSH-20260620-005', 'CSH-20260623-006', 'CSH-20260624-007',
-            'PO-20260601-001', 'SO-20260610-001', 'SO-20260615-002', 'SO-20260620-003', 'SO-20260625-004',
-            'FG-0001', 'RAW-0001', 'RAW-0002', 'PKG-0001', 'BOM-FG-0001',
-            'MODAL-001'
-          ].includes(id);
-
-          const isDummyName = [
-            'Kedai Kopi Kawan', 'PT. Kopi Gayo', 'PT. Roti Consign', 'CV. Bakery Supplier', 'PT. Donut Indonesia',
-            'Setoran Modal Awal', 'Setoran Modal Kerja Retail', 'Setoran Modal Kerja Awal', 'Setoran Modal Awal Toko Konsinyasi',
-            'PT. Sentosa Makmur', 'Sourdough Bakery'
-          ].some(dummy => name.includes(dummy));
-
-          return !(isDummyId || isDummyName);
-        });
-      }
-      return data;
+      return JSON.parse(saved);
     }
     return defaultValue;
   } catch (e) {
@@ -310,31 +290,35 @@ const NAV_GROUPS = [
     id: 'dashboard',
     label: 'Dashboard',
     icon: <LayoutDashboard size={15} />,
-    direct: true
+    direct: true,
+    allowedRoles: ['Superadmin', 'Admin', 'Kasir']
   },
   {
     id: 'statistik',
     label: 'Statistik',
     icon: <Activity size={15} />,
-    direct: true
+    direct: true,
+    allowedRoles: ['Superadmin', 'Admin']
   },
   {
     id: 'gudang',
     label: 'Gudang',
     icon: <Package size={15} />,
+    allowedRoles: ['Superadmin', 'Admin'],
     children: [
-      { id: 'master_produk', label: 'Master Produk', icon: <Database size={14} /> },
-      { id: 'summary_stok', label: 'Summary Stok Bulanan', icon: <TrendingUp size={14} /> },
+      { id: 'master_produk', label: 'Master Produk', icon: <Database size={14} />, allowedRoles: ['Superadmin', 'Admin'] },
+      { id: 'summary_stok', label: 'Summary Stok Bulanan', icon: <TrendingUp size={14} />, allowedRoles: ['Superadmin', 'Admin'] },
     ]
   },
   {
     id: 'transaksi',
     label: 'Transaksi',
     icon: <FileText size={15} />,
+    allowedRoles: ['Superadmin', 'Admin', 'Kasir'],
     children: [
-      { id: 'purchase_order', label: 'Pembelian PO', icon: <Truck size={14} /> },
-      { id: 'sales_order', label: 'Penjualan (Sales Order)', icon: <CreditCard size={14} /> },
-      { id: 'buku_besar_kas', label: 'Buku Besar Kas', icon: <BookOpen size={14} /> },
+      { id: 'purchase_order', label: 'Pembelian PO', icon: <Truck size={14} />, allowedRoles: ['Superadmin', 'Admin'] },
+      { id: 'sales_order', label: 'Penjualan (Sales Order)', icon: <CreditCard size={14} />, allowedRoles: ['Superadmin', 'Admin', 'Kasir'] },
+      { id: 'buku_besar_kas', label: 'Buku Besar Kas', icon: <BookOpen size={14} />, allowedRoles: ['Superadmin', 'Admin'] },
     ]
   },
   // ponytail: gabungkan navigasi pelanggan & supplier ke dropdown tunggal bernama Kartu di TopBar
@@ -342,21 +326,23 @@ const NAV_GROUPS = [
     id: 'kartu',
     label: 'Kartu',
     icon: <Users size={15} />,
+    allowedRoles: ['Superadmin', 'Admin'],
     children: [
-      { id: 'pelanggan', label: 'Kartu Pelanggan', icon: <Users size={14} /> },
-      { id: 'supplier', label: 'Kartu Supplier', icon: <Building2 size={14} /> },
+      { id: 'pelanggan', label: 'Kartu Pelanggan', icon: <Users size={14} />, allowedRoles: ['Superadmin', 'Admin'] },
+      { id: 'supplier', label: 'Kartu Supplier', icon: <Building2 size={14} />, allowedRoles: ['Superadmin', 'Admin'] },
     ]
   },
   {
     id: 'laporan',
     label: 'Laporan',
     icon: <TrendingUp size={15} />,
+    allowedRoles: ['Superadmin'],
     children: [
-      { id: 'laba_rugi', label: 'Laba Rugi (P&L)', icon: <TrendingUp size={14} /> },
-      { id: 'arus_kas', label: 'Arus Kas (Cash Flow)', icon: <DollarSign size={14} /> },
-      { id: 'konsinyasi', label: 'Konsinyasi Retail', icon: <Users size={14} /> },
-      { id: 'penjualan_harian', label: 'Penjualan Harian', icon: <FileSpreadsheet size={14} /> },
-      { id: 'pajak_ppn', label: 'Pajak (PPN)', icon: <Calculator size={14} /> },
+      { id: 'laba_rugi', label: 'Laba Rugi (P&L)', icon: <TrendingUp size={14} />, allowedRoles: ['Superadmin'] },
+      { id: 'arus_kas', label: 'Arus Kas (Cash Flow)', icon: <DollarSign size={14} />, allowedRoles: ['Superadmin'] },
+      { id: 'konsinyasi', label: 'Konsinyasi Retail', icon: <Users size={14} />, allowedRoles: ['Superadmin'] },
+      { id: 'penjualan_harian', label: 'Penjualan Harian', icon: <FileSpreadsheet size={14} />, allowedRoles: ['Superadmin'] },
+      { id: 'pajak_ppn', label: 'Pajak (PPN)', icon: <Calculator size={14} />, allowedRoles: ['Superadmin'] },
     ]
   },
 ];
@@ -376,111 +362,6 @@ const parseRibuan = (str: string): number => {
 };
 
 
-// ponytail: audit & fix UX auto-select pada seluruh searchable dropdown
-function SearchableSelect({
-  value,
-  options,
-  onChange,
-  placeholder,
-  className = "",
-  allowCustom = false
-}: {
-  value: string,
-  options: { label: string, value: string }[],
-  onChange: (val: string) => void,
-  placeholder?: string,
-  className?: string,
-  allowCustom?: boolean
-}) {
-  const selectedLabel = options.find(o => o.value === value)?.label || value;
-  const [inputValue, setInputValue] = React.useState(selectedLabel);
-  const [isOpen, setIsOpen] = React.useState(false);
-  const wrapperRef = React.useRef<HTMLDivElement>(null);
-
-  React.useEffect(() => {
-    if (!isOpen) {
-      setInputValue(selectedLabel);
-    }
-  }, [value, selectedLabel, isOpen]);
-
-  React.useEffect(() => {
-    function handleClickOutside(event: MouseEvent) {
-      if (wrapperRef.current && !wrapperRef.current.contains(event.target as Node)) {
-        setIsOpen(false);
-        setInputValue(selectedLabel);
-      }
-    }
-    document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, [selectedLabel]);
-
-  const isTyping = isOpen && inputValue !== selectedLabel;
-  const filteredOptions = isTyping
-    ? options.filter(o => o.label.toLowerCase().includes(inputValue.toLowerCase()) || o.value.toLowerCase().includes(inputValue.toLowerCase()))
-    : options;
-
-  return (
-    <div className={`relative ${className}`} ref={wrapperRef}>
-      <input
-        type="text"
-        className="w-full pr-8 pl-3 py-2 border border-border rounded-md bg-white text-sm focus:outline-none focus:ring-1 focus:ring-primary font-medium"
-        placeholder={placeholder}
-        value={inputValue}
-        onChange={(e) => {
-          setInputValue(e.target.value);
-          if (!isOpen) setIsOpen(true);
-        }}
-        onFocus={(e) => {
-          e.target.select();
-          setIsOpen(true);
-        }}
-        onBlur={() => {
-          if (allowCustom) {
-            onChange(inputValue);
-          }
-        }}
-      />
-      <button
-        type="button"
-        tabIndex={-1}
-        onClick={() => {
-          setIsOpen(!isOpen);
-          if (isOpen) {
-            setInputValue(selectedLabel);
-          }
-        }}
-        className="absolute inset-y-0 right-0 flex items-center px-2.5 text-slate-400 hover:text-primary cursor-pointer"
-      >
-        <ChevronDown size={14} />
-      </button>
-
-      {isOpen && (
-        <ul className="absolute z-[200] w-full mt-1 bg-white border border-border rounded-md shadow-xl max-h-60 overflow-y-auto text-sm">
-          {filteredOptions.length > 0 ? (
-            filteredOptions.map((opt, idx) => (
-              <li
-                key={idx}
-                className={`px-3 py-2 cursor-pointer hover:bg-slate-50 border-b border-slate-50 last:border-0 ${opt.value === value ? 'bg-primary/5 font-bold text-primary' : 'text-slate-700 font-medium'}`}
-                onMouseDown={(e) => {
-                  e.preventDefault();
-                  onChange(opt.value);
-                  setInputValue(opt.label);
-                  setIsOpen(false);
-                }}
-              >
-                {opt.label}
-              </li>
-            ))
-          ) : (
-            <li className="px-3 py-2 text-slate-400 italic">
-              {allowCustom ? 'Tekan enter/klik luar untuk simpan' : 'Tidak ada hasil...'}
-            </li>
-          )}
-        </ul>
-      )}    </div>
-  );
-}
-
 // ponytail: helper get today YMD for ID generation
 const getTodayYMD = () => {
   const d = new Date();
@@ -489,6 +370,9 @@ const getTodayYMD = () => {
   const dd = String(d.getDate()).padStart(2, '0');
   return `${y}${m}${dd}`;
 };
+
+// ponytail: GAS environment check — login wajib aktif di production
+const isGasEnv_ = typeof google !== 'undefined' && typeof (google as any)?.script !== 'undefined';
 
 export default function App() {
 
@@ -524,16 +408,19 @@ export default function App() {
   const [products, setProducts] = useState<any[]>(() => getLocalStorage('ino_products', INITIAL_PRODUCTS));
   const [isSavingProduct, setIsSavingProduct] = useState(false);
   const [searchProductQuery, setSearchProductQuery] = useState("");
+  const debouncedSearchProductQuery = useDebounce(searchProductQuery, 300);
   const [customers, setCustomers] = useState<any[]>(() => getLocalStorage('ino_customers', INITIAL_CUSTOMERS));
   const [suppliers, setSuppliers] = useState<any[]>(() => getLocalStorage('ino_suppliers', INITIAL_SUPPLIERS));
   const [purchaseOrders, setPurchaseOrders] = useState<any[]>(() => getLocalStorage('ino_purchase_orders', INITIAL_PURCHASE_ORDERS));
   const [isSavingPO, setIsSavingPO] = useState(false);
   const [searchPoQuery, setSearchPoQuery] = useState("");
+  const debouncedSearchPoQuery = useDebounce(searchPoQuery, 300);
   const [salesOrders, setSalesOrders] = useState<any[]>(() => getLocalStorage('ino_sales_orders', INITIAL_SALES_ORDERS));
   const [isSavingSO, setIsSavingSO] = useState(false);
   const [isVoidingPO, setIsVoidingPO] = useState(false);
   const [isVoidingSO, setIsVoidingSO] = useState(false);
   const [searchSoQuery, setSearchSoQuery] = useState("");
+  const debouncedSearchSoQuery = useDebounce(searchSoQuery, 300);
   const [soFilterJenis, setSoFilterJenis] = useState<'Semua' | 'SO' | 'POS'>('Semua');
   const [opnameLog, setOpnameLog] = useState<any[]>(() => getLocalStorage('ino_opname_log', INITIAL_OPNAME_LOG));
   const [cashLedger, setCashLedger] = useState<any[]>(() => getLocalStorage('ino_cash_ledger', INITIAL_CASH_LEDGER));
@@ -542,7 +429,9 @@ export default function App() {
 
   // Settings & Production States
   const [tipeBisnis, setTipeBisnis] = useState<string>(() => getLocalStorage('ino_tipe_bisnis', 'Manufaktur'));
-  const [isLoginActive, setIsLoginActive] = useState<boolean>(() => getLocalStorage('ino_is_login_active', false));
+  // ponytail: di GAS, login selalu wajib aktif — tidak boleh di-skip via localStorage
+  const [isLoginActive, setIsLoginActive] = useState<boolean>(() => isGasEnv_ ? true : getLocalStorage('ino_is_login_active', true));
+  const [isSetupMode, setIsSetupMode] = useState<boolean>(false);
   const [loginUsername, setLoginUsername] = useState<string>(() => getLocalStorage('ino_login_username', ''));
   const [loginPassword, setLoginPassword] = useState<string>(() => getLocalStorage('ino_login_password', ''));
 
@@ -596,11 +485,16 @@ export default function App() {
   const [settingSubTab, setSettingSubTab] = useState<string>('profil');
 
   // Login runtime state
-  const [isLoggedIn, setIsLoggedIn] = useState<boolean>(() => {
-    const active = getLocalStorage('ino_is_login_active', false);
-    return !active;
+  const [isGlobalLoading, setIsGlobalLoading] = useState(false);
+  const [currentUser, setCurrentUser] = useState<SessionUser | null>(() => {
+    const active = isGasEnv_ ? true : getLocalStorage('ino_is_login_active', true);
+    if (!active) return { username: 'admin', nama: 'Admin', role: 'Superadmin' };
+    return getSessionUser();
   });
-
+  const [isLoggedIn, setIsLoggedIn] = useState<boolean>(() => {
+    const active = isGasEnv_ ? true : getLocalStorage('ino_is_login_active', true);
+    return !active || getSessionUser() !== null;
+  });
   const [boms, setBoms] = useState<any[]>(() => getLocalStorage('ino_boms', INITIAL_BOMS));
   const [riwayatProduksi, setRiwayatProduksi] = useState<any[]>(() => getLocalStorage('ino_riwayat_produksi', INITIAL_RIWAYAT_PRODUKSI));
   const [stokPrices, setStokPrices] = useState<Record<string, number>>(() => getLocalStorage('ino_stok_prices', {}));
@@ -609,6 +503,45 @@ export default function App() {
   // Sync to Local Storage on Change
   // ponytail: useEffect penyimpan otomatis dicabut untuk 7 entitas transaksional (dijaga oleh dataService)
   useEffect(() => { setLocalStorage('ino_consignments', consignments); }, [consignments]);
+
+  useEffect(() => {
+    const handleStart = () => setIsGlobalLoading(true);
+    const handleEnd = () => setIsGlobalLoading(false);
+    window.addEventListener('ino_loading_start', handleStart);
+    window.addEventListener('ino_loading_end', handleEnd);
+    return () => {
+      window.removeEventListener('ino_loading_start', handleStart);
+      window.removeEventListener('ino_loading_end', handleEnd);
+    };
+  }, []);
+
+  // Ambil pengaturan dari Google Sheet saat aplikasi pertama dibuka
+  useEffect(() => {
+    const syncSettingsFromGas = async () => {
+      try {
+        const settings = await fetchSettings();
+        if (settings && settings.length > 0) {
+          settings.forEach(item => {
+            const val = item.value;
+            switch(item.key) {
+              case 'login_username': setLoginUsername(val); break;
+              case 'login_password': setLoginPassword(val); break;
+              case 'nama_toko': setNamaToko(val); break;
+              case 'tipe_bisnis': setTipeBisnis(val); break;
+              case 'alamat_toko': setAlamatToko(val); break;
+              case 'telp_toko': setTelpToko(val); break;
+              case 'mata_uang': setMataUang(val); break;
+              case 'ppn_rate': setPpnRate(parseFloat(val) || 0.11); break;
+              case 'metode_hpp_default': setMetodeHppDefault(val); break;
+            }
+          });
+        }
+      } catch (err) {
+        console.warn('Gagal sinkronisasi setting awal:', err);
+      }
+    };
+    syncSettingsFromGas();
+  }, []);
 
   // Sync Settings to Local Storage
   useEffect(() => { setLocalStorage('ino_tipe_bisnis', tipeBisnis); }, [tipeBisnis]);
@@ -672,15 +605,7 @@ export default function App() {
   const [showEmailModal, setShowEmailModal] = useState(false);
   const [emailTo, setEmailTo] = useState('');
   const [emailSending, setEmailSending] = useState(false);
-  const [isGmailConnected, setIsGmailConnected] = useState(false);
   const [emailSubject, setEmailSubject] = useState('Laporan Stok & Mutasi');
-
-  useEffect(() => {
-    initAuth(
-      () => setIsGmailConnected(true),
-      () => setIsGmailConnected(false)
-    );
-  }, []);
 
   const handleSendEmail = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -688,17 +613,6 @@ export default function App() {
 
     setEmailSending(true);
     try {
-      let token = await getAccessToken();
-      if (!token) {
-        const result = await googleSignIn();
-        if (result) {
-          token = result.accessToken;
-        } else {
-          setEmailSending(false);
-          return triggerToast('Gagal login ke Google', 'error');
-        }
-      }
-
       // Generate HTML report summary
       const body = `
       <h3>${emailSubject}</h3>
@@ -709,32 +623,7 @@ export default function App() {
       <p>Ini adalah email laporan otomatis yang dikirim dari sistem inventori.</p>
       `;
 
-      const emailLines = [];
-      emailLines.push(`To: ${emailTo}`);
-      emailLines.push('Content-type: text/html;charset=utf-8');
-      emailLines.push('MIME-Version: 1.0');
-      emailLines.push(`Subject: ${emailSubject}`);
-      emailLines.push('');
-      emailLines.push(body);
-
-      const emailRaw = emailLines.join('\r\n');
-      const base64EncodedEmail = btoa(unescape(encodeURIComponent(emailRaw))).replace(/\+/g, '-').replace(/\//g, '_');
-
-      const res = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          raw: base64EncodedEmail,
-        }),
-      });
-
-      if (!res.ok) {
-        throw new Error('Gagal mengirim email');
-      }
-
+      await sendEmailReport(emailTo, emailSubject, body);
       triggerToast('Email laporan berhasil dikirim!', 'success');
       setShowEmailModal(false);
       setEmailTo('');
@@ -760,7 +649,8 @@ export default function App() {
   const [selectedStokMonths, setSelectedStokMonths] = useState<string[]>(['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']);
   const [stokViewMode, setStokViewMode] = useState<'daily' | 'three_days' | 'weekly' | 'monthly' | 'quarterly' | 'annual'>('monthly');
   const [stokSearchTerm, setStokSearchTerm] = useState('');
-  const [dailySalesReportMonth, setDailySalesReportMonth] = useState('2026-06');
+  const debouncedStokSearchTerm = useDebounce(stokSearchTerm, 300);
+  const [dailySalesReportMonth, setDailySalesReportMonth] = useState(`${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}`);
   const [showAddConsignmentModal, setShowAddConsignmentModal] = useState(false);
   const [showSellConsignmentModal, setShowSellConsignmentModal] = useState(false);
   const [consignmentForm, setConsignmentForm] = useState({
@@ -796,9 +686,9 @@ export default function App() {
 
   // Dashboard Sub-Tabs & Filters
   const [dashboardSubTab, setDashboardSubTab] = useState<'operasional' | 'analitik'>('operasional');
-  const [analitikStartDate, setAnalitikStartDate] = useState('2026-06-01');
+  const [analitikStartDate, setAnalitikStartDate] = useState(`${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}-01`);
   const [arusKasFilterAkun, setArusKasFilterAkun] = useState('Semua Akun');
-  const [analitikEndDate, setAnalitikEndDate] = useState('2026-06-30');
+  const [analitikEndDate, setAnalitikEndDate] = useState(`${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}-${new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0).getDate()}`);
   const [selectedSkuAnalysis, setSelectedSkuAnalysis] = useState('');
   const [selectedCustomerAnalysis, setSelectedCustomerAnalysis] = useState('');
 
@@ -941,7 +831,7 @@ export default function App() {
         const dateMatches = (tgl: string) => {
           if (isMonthlyMatching) {
             const mCode = AVAILABLE_MONTHS.find(x => x.id === period.id)?.code;
-            return tgl.startsWith(`2026-${mCode}`);
+            return tgl.startsWith(`${new Date().getFullYear()}-${mCode}`);
           }
           if (isQuarterlyMatching) {
             const mCodes = QUARTERS_DEF.find(x => x.id === period.id)?.months.map(m => AVAILABLE_MONTHS.find(x => x.id === m)?.code) || [];
@@ -1159,7 +1049,10 @@ export default function App() {
   // Login Screen Controlled Input States
   const [loginInputUser, setLoginInputUser] = useState('');
   const [loginInputPass, setLoginInputPass] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [isLoggingIn, setIsLoggingIn] = useState(false);
+  const [loginAttempts, setLoginAttempts] = useState(0);
+  const [lockoutUntil, setLockoutUntil] = useState<number | null>(null);
 
   // Google Sheets / Excel Hub States
   const [sheetsHubSubTab, setSheetsHubSubTab] = useState<'ekspor' | 'impor' | 'gas'>('ekspor');
@@ -1294,70 +1187,57 @@ export default function App() {
     let hasValidInput = false;
     let anyError = false;
 
-    setPurchaseOrders(prevOrders => {
-      const next = prevOrders.map(po => {
-        if (po.id !== poId) return po;
+    const poIndex = purchaseOrders.findIndex((p: any) => p.id === poId);
+    if (poIndex === -1) return;
+    const po = purchaseOrders[poIndex];
 
-        const updatedItems = po.items.map((item: any) => {
-          const received = item.qtyReceived ?? (po.statusLogistik === 'Diterima' ? item.qty : 0);
-          const inputVal = poReceiptQtys[item.sku] ?? 0;
+    const updatedItems = po.items.map((item: any) => {
+      const received = item.qtyReceived ?? (po.statusLogistik === 'Diterima' ? item.qty : 0);
+      const inputVal = poReceiptQtys[item.sku] ?? 0;
 
-          if (inputVal < 0) {
-            triggerToast('Kuantitas terima tidak boleh negatif!', 'error');
-            anyError = true;
-            return item;
-          }
+      if (inputVal < 0) {
+        triggerToast('Kuantitas terima tidak boleh negatif!', 'error');
+        anyError = true;
+        return item;
+      }
 
-          const sisa = item.qty - received;
-          if (inputVal > sisa) {
-            triggerToast(`Kuantitas terima untuk ${item.nama || item.sku} melebihi sisa pesanan (${sisa})!`, 'error');
-            anyError = true;
-            return item;
-          }
+      const sisa = item.qty - received;
+      if (inputVal > sisa) {
+        triggerToast(`Kuantitas terima untuk ${item.nama || item.sku} melebihi sisa pesanan (${sisa})!`, 'error');
+        anyError = true;
+        return item;
+      }
 
-          if (inputVal > 0) {
-            hasValidInput = true;
-          }
-
-          return {
-            ...item,
-            qtyReceived: received + inputVal
-          };
-        });
-
-        if (anyError) return po;
-        if (!hasValidInput) {
-          triggerToast('Isi kuantitas terima minimal pada satu produk!', 'warning');
-          return po;
-        }
-
-        // Add to product stocks physically
-        const updatedProducts = products.map(p => {
-          const inputVal = poReceiptQtys[p.sku] ?? 0;
-          return inputVal > 0 ? { ...p, stok: p.stok + inputVal } : p;
-        });
-        setProducts(updatedProducts);
-        saveAllProducts(updatedProducts);
-
-        // Check new logistik status
-        const allFullyReceived = updatedItems.every((item: any) => (item.qtyReceived || 0) >= item.qty);
-        const someReceived = updatedItems.some((item: any) => (item.qtyReceived || 0) > 0);
-        const newStatus = allFullyReceived ? 'Diterima' : someReceived ? 'Diterima Sebagian' : 'Menunggu';
-
-        const updatedPo = {
-          ...po,
-          items: updatedItems,
-          statusLogistik: newStatus
-        };
-
-        setSelectedPo(updatedPo);
-        setPoActionForm(null);
-        triggerToast(`Berhasil menerima barang untuk ${po.id}. Stok gudang ditambahkan.`);
-        return updatedPo;
-      });
-      saveAllPurchaseOrders(next);
-      return next;
+      if (inputVal > 0) hasValidInput = true;
+      return { ...item, qtyReceived: received + inputVal };
     });
+
+    if (anyError) return;
+    if (!hasValidInput) {
+      triggerToast('Isi kuantitas terima minimal pada satu produk!', 'warning');
+      return;
+    }
+
+    const allFullyReceived = updatedItems.every((item: any) => (item.qtyReceived || 0) >= item.qty);
+    const someReceived = updatedItems.some((item: any) => (item.qtyReceived || 0) > 0);
+    const newStatus = allFullyReceived ? 'Diterima' : someReceived ? 'Diterima Sebagian' : 'Menunggu';
+
+    const updatedPo = { ...po, items: updatedItems, statusLogistik: newStatus };
+    const nextPurchaseOrders = [...purchaseOrders];
+    nextPurchaseOrders[poIndex] = updatedPo;
+    setPurchaseOrders(nextPurchaseOrders);
+    saveAllPurchaseOrders(nextPurchaseOrders);
+
+    const updatedProducts = products.map(p => {
+      const inputVal = poReceiptQtys[p.sku] ?? 0;
+      return inputVal > 0 ? { ...p, stok: p.stok + inputVal } : p;
+    });
+    setProducts(updatedProducts);
+    saveAllProducts(updatedProducts);
+
+    setSelectedPo(updatedPo);
+    setPoActionForm(null);
+    triggerToast(`Berhasil menerima barang untuk ${po.id}. Stok gudang ditambahkan.`);
   };
 
   // 2. Submit Shipment (Pengiriman SO)
@@ -1365,206 +1245,166 @@ export default function App() {
     let hasValidInput = false;
     let anyError = false;
 
-    setSalesOrders(prevOrders => {
-      const next = prevOrders.map(so => {
-        if (so.id !== soId) return so;
+    const soIndex = salesOrders.findIndex((s: any) => s.id === soId);
+    if (soIndex === -1) return;
+    const so = salesOrders[soIndex];
 
-        const updatedItems = so.items.map((item: any) => {
-          const shipped = item.qtyShipped ?? (so.statusLogistik === 'Terkirim' || so.statusLogistik === 'Selesai' ? item.qty : 0);
-          const inputVal = soShipmentQtys[item.sku] ?? 0;
+    const updatedItems = so.items.map((item: any) => {
+      const shipped = item.qtyShipped ?? (so.statusLogistik === 'Terkirim' || so.statusLogistik === 'Selesai' ? item.qty : 0);
+      const inputVal = soShipmentQtys[item.sku] ?? 0;
 
-          if (inputVal < 0) {
-            triggerToast('Kuantitas kirim tidak boleh negatif!', 'error');
-            anyError = true;
-            return item;
-          }
+      if (inputVal < 0) {
+        triggerToast('Kuantitas kirim tidak boleh negatif!', 'error');
+        anyError = true;
+        return item;
+      }
 
-          const sisa = item.qty - shipped;
-          if (inputVal > sisa) {
-            triggerToast(`Kuantitas kirim untuk ${item.nama || item.sku} melebihi sisa pesanan (${sisa})!`, 'error');
-            anyError = true;
-            return item;
-          }
+      const sisa = item.qty - shipped;
+      if (inputVal > sisa) {
+        triggerToast(`Kuantitas kirim untuk ${item.nama || item.sku} melebihi sisa pesanan (${sisa})!`, 'error');
+        anyError = true;
+        return item;
+      }
 
-          // Check current product stock
-          const prod = products.find(p => p.sku === item.sku);
-          if (prod && prod.stok < inputVal) {
-            triggerToast(`Gagal kirim! Stok ${prod.nama} di gudang (${prod.stok}) kurang dari jumlah dikirim (${inputVal}).`, 'error');
-            anyError = true;
-            return item;
-          }
+      const prod = products.find(p => p.sku === item.sku);
+      if (prod && prod.stok < inputVal) {
+        triggerToast(`Gagal kirim! Stok ${prod.nama} di gudang (${prod.stok}) kurang dari jumlah dikirim (${inputVal}).`, 'error');
+        anyError = true;
+        return item;
+      }
 
-          if (inputVal > 0) {
-            hasValidInput = true;
-          }
-
-          return {
-            ...item,
-            qtyShipped: shipped + inputVal
-          };
-        });
-
-        if (anyError) return so;
-        if (!hasValidInput) {
-          triggerToast('Isi kuantitas kirim minimal pada satu produk!', 'warning');
-          return so;
-        }
-
-        // Deduct from product stocks physically
-        const updatedProducts = products.map(p => {
-          const inputVal = soShipmentQtys[p.sku] ?? 0;
-          return inputVal > 0 ? { ...p, stok: Math.max(0, p.stok - inputVal) } : p;
-        });
-        setProducts(updatedProducts);
-        saveAllProducts(updatedProducts);
-
-        // Check new status
-        const allDone = updatedItems.every((item: any) => (item.qtyShipped || 0) >= item.qty);
-        const someDone = updatedItems.some((item: any) => (item.qtyShipped || 0) > 0);
-        const newStatus = allDone ? 'Terkirim' : someDone ? 'Terkirim Sebagian' : 'Menunggu Pengiriman';
-
-        const updatedSo = {
-          ...so,
-          items: updatedItems,
-          statusLogistik: newStatus
-        };
-
-        setSelectedSo(updatedSo);
-        setSoActionForm(null);
-        triggerToast(`Berhasil mengirimkan barang untuk ${so.id}. Stok gudang dikurangi.`);
-        return updatedSo;
-      });
-      saveAllSalesOrders(next);
-      return next;
+      if (inputVal > 0) hasValidInput = true;
+      return { ...item, qtyShipped: shipped + inputVal };
     });
+
+    if (anyError) return;
+    if (!hasValidInput) {
+      triggerToast('Isi kuantitas kirim minimal pada satu produk!', 'warning');
+      return;
+    }
+
+    const allDone = updatedItems.every((item: any) => (item.qtyShipped || 0) >= item.qty);
+    const someDone = updatedItems.some((item: any) => (item.qtyShipped || 0) > 0);
+    const newStatus = allDone ? 'Terkirim' : someDone ? 'Terkirim Sebagian' : 'Menunggu Pengiriman';
+
+    const updatedSo = { ...so, items: updatedItems, statusLogistik: newStatus };
+    const nextSalesOrders = [...salesOrders];
+    nextSalesOrders[soIndex] = updatedSo;
+    setSalesOrders(nextSalesOrders);
+    saveAllSalesOrders(nextSalesOrders);
+
+    const updatedProducts = products.map(p => {
+      const inputVal = soShipmentQtys[p.sku] ?? 0;
+      return inputVal > 0 ? { ...p, stok: Math.max(0, p.stok - inputVal) } : p;
+    });
+    setProducts(updatedProducts);
+    saveAllProducts(updatedProducts);
+
+    setSelectedSo(updatedSo);
+    setSoActionForm(null);
+    triggerToast(`Berhasil mengirimkan barang untuk ${so.id}. Stok gudang dikurangi.`);
   };
 
   // 3. Submit PO Payment
   const submitPoPayment = (poId: string) => {
     if (poPaymentVal <= 0) return triggerToast('Nominal pembayaran tidak valid!', 'error');
 
-    let anyError = false;
-    setPurchaseOrders(prevOrders => {
-      const next = prevOrders.map(po => {
-        if (po.id !== poId) return po;
+    const poIndex = purchaseOrders.findIndex((p: any) => p.id === poId);
+    if (poIndex === -1) return;
+    const po = purchaseOrders[poIndex];
 
-        const paid = po.totalPaid ?? (po.statusBayar === 'Lunas' ? po.grandTotal : 0);
-        const sisa = po.grandTotal - paid;
+    const paid = po.totalPaid ?? (po.statusBayar === 'Lunas' ? po.grandTotal : 0);
+    const sisa = po.grandTotal - paid;
 
-        if (poPaymentVal > sisa) {
-          triggerToast(`Nominal pembayaran (Rp ${poPaymentVal.toLocaleString('id-ID')}) melebihi sisa hutang (Rp ${sisa.toLocaleString('id-ID')})!`, 'error');
-          anyError = true;
-          return po;
-        }
+    if (poPaymentVal > sisa) {
+      triggerToast(`Nominal pembayaran (Rp ${poPaymentVal.toLocaleString('id-ID')}) melebihi sisa hutang (Rp ${sisa.toLocaleString('id-ID')})!`, 'error');
+      return;
+    }
 
-        const updatedPaid = paid + poPaymentVal;
-        const isLunas = updatedPaid >= po.grandTotal - 0.01;
+    const updatedPaid = paid + poPaymentVal;
+    const isLunas = updatedPaid >= po.grandTotal - 0.01;
 
-        // Adjust supplier's hutang
-        setSuppliers(prev => {
-          const next = prev.map(s => s.nama === po.supplier ? { ...s, hutang: Math.max(0, s.hutang - poPaymentVal) } : s);
-          saveAllSuppliers(next);
-          return next;
-        });
+    const nextSuppliers = suppliers.map(s => s.nama === po.supplier ? { ...s, hutang: Math.max(0, s.hutang - poPaymentVal) } : s);
+    setSuppliers(nextSuppliers);
+    saveAllSuppliers(nextSuppliers);
 
-        // Log cash transaction
-        setCashLedger(prev => {
-          const targetAkun = determineAccount(poPaymentMetode);
-          const accountTx = prev.filter(c => (c.akun || 'Bank') === targetAkun);
-          const lastBal = accountTx.length > 0 ? accountTx[accountTx.length - 1].saldo : 0;
-          const next = [...prev, {
-            id: `CSH-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${Math.floor(100 + Math.random() * 900)}`,
-            tanggal: new Date().toISOString().slice(0, 10),
-            ref: po.id,
-            keterangan: `Pembayaran Hutang ke Supplier ${po.supplier} [${po.id}]`,
-            kategori: 'Pembelian',
-            debit: 0,
-            kredit: poPaymentVal,
-            saldo: lastBal - poPaymentVal,
-            akun: targetAkun
-          }];
-          saveAllCashLedger(next);
-          return next;
-        });
+    const targetAkun = determineAccount(poPaymentMetode);
+    const accountTx = cashLedger.filter(c => (c.akun || 'Bank') === targetAkun);
+    const lastBal = accountTx.length > 0 ? accountTx[accountTx.length - 1].saldo : 0;
+    const nextCashLedger = [...cashLedger, {
+      id: `CSH-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${crypto.randomUUID().slice(0, 8).toUpperCase()}`,
+      tanggal: new Date().toISOString().slice(0, 10),
+      ref: po.id,
+      keterangan: `Pembayaran Hutang ke Supplier ${po.supplier} [${po.id}]`,
+      kategori: 'Pembelian',
+      debit: 0,
+      kredit: poPaymentVal,
+      saldo: lastBal - poPaymentVal,
+      akun: targetAkun
+    }];
+    setCashLedger(nextCashLedger);
+    saveAllCashLedger(nextCashLedger);
 
-        const updatedPo = {
-          ...po,
-          totalPaid: updatedPaid,
-          statusBayar: isLunas ? 'Lunas' : 'Cicilan'
-        };
+    const updatedPo = { ...po, totalPaid: updatedPaid, statusBayar: isLunas ? 'Lunas' : 'Cicilan' };
+    const nextPurchaseOrders = [...purchaseOrders];
+    nextPurchaseOrders[poIndex] = updatedPo;
+    setPurchaseOrders(nextPurchaseOrders);
+    saveAllPurchaseOrders(nextPurchaseOrders);
 
-        setSelectedPo(updatedPo);
-        setPoActionForm(null);
-        triggerToast(`Pembayaran PO sebesar Rp ${poPaymentVal.toLocaleString('id-ID')} berhasil dicatat.`);
-        return updatedPo;
-      });
-      saveAllPurchaseOrders(next);
-      return next;
-    });
+    setSelectedPo(updatedPo);
+    setPoActionForm(null);
+    triggerToast(`Pembayaran PO sebesar Rp ${poPaymentVal.toLocaleString('id-ID')} berhasil dicatat.`);
   };
 
   // 4. Submit SO Payment (Pelunasan Piutang)
   const submitSoPayment = (soId: string) => {
     if (soPaymentVal <= 0) return triggerToast('Nominal pembayaran tidak valid!', 'error');
 
-    let anyError = false;
-    setSalesOrders(prevOrders => {
-      const next = prevOrders.map(so => {
-        if (so.id !== soId) return so;
+    const soIndex = salesOrders.findIndex((s: any) => s.id === soId);
+    if (soIndex === -1) return;
+    const so = salesOrders[soIndex];
 
-        const paid = so.totalPaid ?? (so.statusBayar === 'Lunas' ? so.grandTotal : 0);
-        const sisa = so.grandTotal - paid;
+    const paid = so.totalPaid ?? (so.statusBayar === 'Lunas' ? so.grandTotal : 0);
+    const sisa = so.grandTotal - paid;
 
-        if (soPaymentVal > sisa) {
-          triggerToast(`Nominal setoran (Rp ${soPaymentVal.toLocaleString('id-ID')}) melebihi sisa piutang (Rp ${sisa.toLocaleString('id-ID')})!`, 'error');
-          anyError = true;
-          return so;
-        }
+    if (soPaymentVal > sisa) {
+      triggerToast(`Nominal setoran (Rp ${soPaymentVal.toLocaleString('id-ID')}) melebihi sisa piutang (Rp ${sisa.toLocaleString('id-ID')})!`, 'error');
+      return;
+    }
 
-        const updatedPaid = paid + soPaymentVal;
-        const isLunas = updatedPaid >= so.grandTotal - 0.01;
+    const updatedPaid = paid + soPaymentVal;
+    const isLunas = updatedPaid >= so.grandTotal - 0.01;
 
-        // Adjust customer's piutang
-        setCustomers(prev => {
-          const next = prev.map(c => c.nama === so.pelanggan ? { ...c, piutang: Math.max(0, c.piutang - soPaymentVal) } : c);
-          saveAllCustomers(next);
-          return next;
-        });
+    const nextCustomers = customers.map(c => c.nama === so.pelanggan ? { ...c, piutang: Math.max(0, c.piutang - soPaymentVal) } : c);
+    setCustomers(nextCustomers);
+    saveAllCustomers(nextCustomers);
 
-        // Log cash transaction
-        setCashLedger(prev => {
-          const targetAkun = determineAccount(soPaymentMetode);
-          const accountTx = prev.filter(c => (c.akun || 'Bank') === targetAkun);
-          const lastBal = accountTx.length > 0 ? accountTx[accountTx.length - 1].saldo : 0;
-          const next = [...prev, {
-            id: `CSH-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${Math.floor(100 + Math.random() * 900)}`,
-            tanggal: new Date().toISOString().slice(0, 10),
-            ref: so.id,
-            keterangan: `Penerimaan Pelunasan dari Pelanggan ${so.pelanggan} [${so.id}]`,
-            kategori: 'Penjualan',
-            debit: soPaymentVal,
-            kredit: 0,
-            saldo: lastBal + soPaymentVal,
-            akun: targetAkun
-          }];
-          saveAllCashLedger(next);
-          return next;
-        });
+    const targetAkun = determineAccount(soPaymentMetode);
+    const accountTx = cashLedger.filter(c => (c.akun || 'Bank') === targetAkun);
+    const lastBal = accountTx.length > 0 ? accountTx[accountTx.length - 1].saldo : 0;
+    const nextCashLedger = [...cashLedger, {
+      id: `CSH-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${crypto.randomUUID().slice(0, 8).toUpperCase()}`,
+      tanggal: new Date().toISOString().slice(0, 10),
+      ref: so.id,
+      keterangan: `Penerimaan Pelunasan dari Pelanggan ${so.pelanggan} [${so.id}]`,
+      kategori: 'Penjualan',
+      debit: soPaymentVal,
+      kredit: 0,
+      saldo: lastBal + soPaymentVal,
+      akun: targetAkun
+    }];
+    setCashLedger(nextCashLedger);
+    saveAllCashLedger(nextCashLedger);
 
-        const updatedSo = {
-          ...so,
-          totalPaid: updatedPaid,
-          statusBayar: isLunas ? 'Lunas' : 'Cicilan'
-        };
+    const updatedSo = { ...so, totalPaid: updatedPaid, statusBayar: isLunas ? 'Lunas' : 'Cicilan' };
+    const nextSalesOrders = [...salesOrders];
+    nextSalesOrders[soIndex] = updatedSo;
+    setSalesOrders(nextSalesOrders);
+    saveAllSalesOrders(nextSalesOrders);
 
-        setSelectedSo(updatedSo);
-        setSoActionForm(null);
-        triggerToast(`Pelunasan piutang sebesar Rp ${soPaymentVal.toLocaleString('id-ID')} berhasil dicatat.`);
-        return updatedSo;
-      });
-      saveAllSalesOrders(next);
-      return next;
-    });
+    setSelectedSo(updatedSo);
+    setSoActionForm(null);
+    triggerToast(`Pelunasan piutang sebesar Rp ${soPaymentVal.toLocaleString('id-ID')} berhasil dicatat.`);
   };
 
   // 5. Submit PO Retur
@@ -1577,105 +1417,82 @@ export default function App() {
       return;
     }
 
-    setPurchaseOrders(prevOrders => {
-      const next = prevOrders.map(po => {
-        if (po.id !== poId) return po;
+    const poIndex = purchaseOrders.findIndex((p: any) => p.id === poId);
+    if (poIndex === -1) return;
+    const po = purchaseOrders[poIndex];
 
-        const updatedItems = po.items.map((item: any) => {
-          const received = item.qtyReceived ?? (po.statusLogistik === 'Diterima' ? item.qty : 0);
-          const returned = item.qtyReturned ?? 0;
-          const inputVal = poReturQtys[item.sku] ?? 0;
+    const updatedItems = po.items.map((item: any) => {
+      const received = item.qtyReceived ?? (po.statusLogistik === 'Diterima' ? item.qty : 0);
+      const returned = item.qtyReturned ?? 0;
+      const inputVal = poReturQtys[item.sku] ?? 0;
 
-          if (inputVal < 0) {
-            triggerToast('Kuantitas retur tidak boleh negatif!', 'error');
-            anyError = true;
-            return item;
-          }
+      if (inputVal < 0) {
+        triggerToast('Kuantitas retur tidak boleh negatif!', 'error');
+        anyError = true;
+        return item;
+      }
 
-          const maxRetur = received - returned;
-          if (inputVal > maxRetur) {
-            triggerToast(`Jumlah retur untuk ${item.nama || item.sku} melebihi batas yang diterima (${maxRetur})!`, 'error');
-            anyError = true;
-            return item;
-          }
+      const maxRetur = received - returned;
+      if (inputVal > maxRetur) {
+        triggerToast(`Jumlah retur untuk ${item.nama || item.sku} melebihi batas yang diterima (${maxRetur})!`, 'error');
+        anyError = true;
+        return item;
+      }
 
-          // Check if we have enough stock at hand in our products database to return
-          const prod = products.find(p => p.sku === item.sku);
-          if (prod && prod.stok < inputVal) {
-            triggerToast(`Gagal retur! Sisa stok ${prod.nama} di gudang (${prod.stok}) kurang dari jumlah retur (${inputVal}).`, 'error');
-            anyError = true;
-            return item;
-          }
+      const prod = products.find(p => p.sku === item.sku);
+      if (prod && prod.stok < inputVal) {
+        triggerToast(`Gagal retur! Sisa stok ${prod.nama} di gudang (${prod.stok}) kurang dari jumlah retur (${inputVal}).`, 'error');
+        anyError = true;
+        return item;
+      }
 
-          if (inputVal > 0) {
-            hasValidInput = true;
-          }
-
-          return {
-            ...item,
-            qtyReturned: returned + inputVal
-          };
-        });
-
-        if (anyError) return po;
-        if (!hasValidInput) {
-          triggerToast('Isi angka retur minimal pada satu barang.', 'warning');
-          return po;
-        }
-
-        // Deduct returned goods from stocks physically
-        const updatedProducts = products.map(p => {
-          const inputVal = poReturQtys[p.sku] ?? 0;
-          return inputVal > 0 ? { ...p, stok: Math.max(0, p.stok - inputVal) } : p;
-        });
-        setProducts(updatedProducts);
-        saveAllProducts(updatedProducts);
-
-        // Reduce Supplier's Hutang by returValue
-        let totalReturValue = 0;
-        updatedItems.forEach((item: any) => {
-          const inputVal = poReturQtys[item.sku] ?? 0;
-          totalReturValue += inputVal * item.harga;
-        });
-
-        if (po.statusBayar === 'Belum Dibayar' || po.statusBayar === 'Cicilan') {
-          setSuppliers(prev => {
-            const next = prev.map(s => s.nama === po.supplier ? { ...s, hutang: Math.max(0, s.hutang - totalReturValue) } : s);
-            saveAllSuppliers(next);
-            return next;
-          });
-        }
-
-        // Add to returItems array
-        const currentReturns = po.returItems || [];
-        const newReturns = [...currentReturns];
-        updatedItems.forEach((item: any) => {
-          const inputVal = poReturQtys[item.sku] ?? 0;
-          if (inputVal > 0) {
-            newReturns.push({
-              sku: item.sku,
-              nama: item.nama,
-              qty: inputVal,
-              tanggal: new Date().toISOString().split('T')[0],
-              alasan: poReturAlasan
-            });
-          }
-        });
-
-        const updatedPo = {
-          ...po,
-          items: updatedItems,
-          returItems: newReturns
-        };
-
-        setSelectedPo(updatedPo);
-        setPoActionForm(null);
-        triggerToast('Retur Pembelian berhasil diproses. Stok gudang dikurangi & hutang supplier disesuaikan.');
-        return updatedPo;
-      });
-      saveAllPurchaseOrders(next);
-      return next;
+      if (inputVal > 0) hasValidInput = true;
+      return { ...item, qtyReturned: returned + inputVal };
     });
+
+    if (anyError) return;
+    if (!hasValidInput) {
+      triggerToast('Isi angka retur minimal pada satu barang.', 'warning');
+      return;
+    }
+
+    const updatedProducts = products.map(p => {
+      const inputVal = poReturQtys[p.sku] ?? 0;
+      return inputVal > 0 ? { ...p, stok: Math.max(0, p.stok - inputVal) } : p;
+    });
+    setProducts(updatedProducts);
+    saveAllProducts(updatedProducts);
+
+    let totalReturValue = 0;
+    updatedItems.forEach((item: any) => {
+      const inputVal = poReturQtys[item.sku] ?? 0;
+      totalReturValue += inputVal * item.harga;
+    });
+
+    if (po.statusBayar === 'Belum Dibayar' || po.statusBayar === 'Cicilan') {
+      const nextSuppliers = suppliers.map(s => s.nama === po.supplier ? { ...s, hutang: Math.max(0, s.hutang - totalReturValue) } : s);
+      setSuppliers(nextSuppliers);
+      saveAllSuppliers(nextSuppliers);
+    }
+
+    const currentReturns = po.returItems || [];
+    const newReturns = [...currentReturns];
+    updatedItems.forEach((item: any) => {
+      const inputVal = poReturQtys[item.sku] ?? 0;
+      if (inputVal > 0) {
+        newReturns.push({ sku: item.sku, nama: item.nama, qty: inputVal, tanggal: new Date().toISOString().split('T')[0], alasan: poReturAlasan });
+      }
+    });
+
+    const updatedPo = { ...po, items: updatedItems, returItems: newReturns };
+    const nextPurchaseOrders = [...purchaseOrders];
+    nextPurchaseOrders[poIndex] = updatedPo;
+    setPurchaseOrders(nextPurchaseOrders);
+    saveAllPurchaseOrders(nextPurchaseOrders);
+
+    setSelectedPo(updatedPo);
+    setPoActionForm(null);
+    triggerToast('Retur Pembelian berhasil diproses. Stok gudang dikurangi & hutang supplier disesuaikan.');
   };
 
   // 6. Submit SO Retur (Customer)
@@ -1688,125 +1505,95 @@ export default function App() {
       return;
     }
 
-    setSalesOrders(prevOrders => {
-      const next = prevOrders.map(so => {
-        if (so.id !== soId) return so;
+    const soIndex = salesOrders.findIndex((s: any) => s.id === soId);
+    if (soIndex === -1) return;
+    const so = salesOrders[soIndex];
 
-        const updatedItems = so.items.map((item: any) => {
-          const shipped = item.qtyShipped ?? (so.statusLogistik === 'Terkirim' || so.statusLogistik === 'Selesai' ? item.qty : 0);
-          const returned = item.qtyReturned ?? 0;
-          const inputVal = soReturQtys[item.sku] ?? 0;
+    const updatedItems = so.items.map((item: any) => {
+      const shipped = item.qtyShipped ?? (so.statusLogistik === 'Terkirim' || so.statusLogistik === 'Selesai' ? item.qty : 0);
+      const returned = item.qtyReturned ?? 0;
+      const inputVal = soReturQtys[item.sku] ?? 0;
 
-          if (inputVal < 0) {
-            triggerToast('Kuantitas retur tidak boleh negatif!', 'error');
-            anyError = true;
-            return item;
-          }
+      if (inputVal < 0) {
+        triggerToast('Kuantitas retur tidak boleh negatif!', 'error');
+        anyError = true;
+        return item;
+      }
 
-          const maxRetur = shipped - returned;
-          if (inputVal > maxRetur) {
-            triggerToast(`Jumlah retur untuk ${item.nama || item.sku} melebihi batas yang dikirim (${maxRetur})!`, 'error');
-            anyError = true;
-            return item;
-          }
+      const maxRetur = shipped - returned;
+      if (inputVal > maxRetur) {
+        triggerToast(`Jumlah retur untuk ${item.nama || item.sku} melebihi batas yang dikirim (${maxRetur})!`, 'error');
+        anyError = true;
+        return item;
+      }
 
-          if (inputVal > 0) {
-            hasValidInput = true;
-          }
-
-          return {
-            ...item,
-            qtyReturned: returned + inputVal
-          };
-        });
-
-        if (anyError) return so;
-        if (!hasValidInput) {
-          triggerToast('Isi angka retur minimal pada satu barang.', 'warning');
-          return so;
-        }
-
-        // Add returned goods back to stocks physically
-        const updatedProducts = products.map(p => {
-          const inputVal = soReturQtys[p.sku] ?? 0;
-          return inputVal > 0 ? { ...p, stok: p.stok + inputVal } : p;
-        });
-        setProducts(updatedProducts);
-        saveAllProducts(updatedProducts);
-
-        // Reduce Customer's Piutang by returValue
-        let totalReturValue = 0;
-        updatedItems.forEach((item: any) => {
-          const inputVal = soReturQtys[item.sku] ?? 0;
-          totalReturValue += inputVal * item.harga;
-        });
-
-        if (so.statusBayar === 'Belum Lunas' || so.statusBayar === 'Cicilan') {
-          setCustomers(prev => {
-            const next = prev.map(c => c.nama === so.pelanggan ? { ...c, piutang: Math.max(0, c.piutang - totalReturValue) } : c);
-            saveAllCustomers(next);
-            return next;
-          });
-        }
-
-        // Add to returItems array
-        const currentReturns = so.returItems || [];
-        const newReturns = [...currentReturns];
-        updatedItems.forEach((item: any) => {
-          const inputVal = soReturQtys[item.sku] ?? 0;
-          if (inputVal > 0) {
-            newReturns.push({
-              sku: item.sku,
-              nama: item.nama,
-              qty: inputVal,
-              tanggal: new Date().toISOString().split('T')[0],
-              alasan: soReturAlasan
-            });
-          }
-        });
-
-        const updatedSo = {
-          ...so,
-          items: updatedItems,
-          returItems: newReturns
-        };
-
-        setSelectedSo(updatedSo);
-        setSoActionForm(null);
-        triggerToast('Retur Penjualan berhasil diproses. Stok gudang ditambahkan & piutang customer disesuaikan.');
-        return updatedSo;
-      });
-      saveAllSalesOrders(next);
-      return next;
+      if (inputVal > 0) hasValidInput = true;
+      return { ...item, qtyReturned: returned + inputVal };
     });
+
+    if (anyError) return;
+    if (!hasValidInput) {
+      triggerToast('Isi angka retur minimal pada satu barang.', 'warning');
+      return;
+    }
+
+    const updatedProducts = products.map(p => {
+      const inputVal = soReturQtys[p.sku] ?? 0;
+      return inputVal > 0 ? { ...p, stok: p.stok + inputVal } : p;
+    });
+    setProducts(updatedProducts);
+    saveAllProducts(updatedProducts);
+
+    let totalReturValue = 0;
+    updatedItems.forEach((item: any) => {
+      const inputVal = soReturQtys[item.sku] ?? 0;
+      totalReturValue += inputVal * item.harga;
+    });
+
+    if (so.statusBayar === 'Belum Lunas' || so.statusBayar === 'Cicilan') {
+      const nextCustomers = customers.map(c => c.nama === so.pelanggan ? { ...c, piutang: Math.max(0, c.piutang - totalReturValue) } : c);
+      setCustomers(nextCustomers);
+      saveAllCustomers(nextCustomers);
+    }
+
+    const currentReturns = so.returItems || [];
+    const newReturns = [...currentReturns];
+    updatedItems.forEach((item: any) => {
+      const inputVal = soReturQtys[item.sku] ?? 0;
+      if (inputVal > 0) {
+        newReturns.push({ sku: item.sku, nama: item.nama, qty: inputVal, tanggal: new Date().toISOString().split('T')[0], alasan: soReturAlasan });
+      }
+    });
+
+    const updatedSo = { ...so, items: updatedItems, returItems: newReturns };
+    const nextSalesOrders = [...salesOrders];
+    nextSalesOrders[soIndex] = updatedSo;
+    setSalesOrders(nextSalesOrders);
+    saveAllSalesOrders(nextSalesOrders);
+
+    setSelectedSo(updatedSo);
+    setSoActionForm(null);
+    triggerToast('Retur Penjualan berhasil diproses. Stok gudang ditambahkan & piutang customer disesuaikan.');
   };
 
   // 7. Approve PO (Draft -> Official)
   const handleApprovePO = (poId: string) => {
-    setPurchaseOrders(prevOrders => {
-      const next = prevOrders.map(po => {
-        if (po.id !== poId) return po;
+    const poIndex = purchaseOrders.findIndex((p: any) => p.id === poId);
+    if (poIndex === -1) return;
+    const po = purchaseOrders[poIndex];
 
-        // Add grand total to supplier's hutang
-        setSuppliers(prev => {
-          const next = prev.map(s => s.nama === po.supplier ? { ...s, hutang: s.hutang + po.grandTotal } : s);
-          saveAllSuppliers(next);
-          return next;
-        });
+    const nextSuppliers = suppliers.map(s => s.nama === po.supplier ? { ...s, hutang: s.hutang + po.grandTotal } : s);
+    setSuppliers(nextSuppliers);
+    saveAllSuppliers(nextSuppliers);
 
-        const updatedPo = {
-          ...po,
-          statusLogistik: 'Menunggu',
-          statusBayar: 'Belum Dibayar'
-        };
+    const updatedPo = { ...po, statusLogistik: 'Menunggu', statusBayar: 'Belum Dibayar' };
+    const nextPurchaseOrders = [...purchaseOrders];
+    nextPurchaseOrders[poIndex] = updatedPo;
+    setPurchaseOrders(nextPurchaseOrders);
+    saveAllPurchaseOrders(nextPurchaseOrders);
 
-        setSelectedPo(updatedPo);
-        triggerToast(`PO ${poId} berhasil disetujui & dirilis ke Supplier.`);
-        return updatedPo;
-      });
-      saveAllPurchaseOrders(next);
-      return next;
-    });
+    setSelectedPo(updatedPo);
+    triggerToast(`PO ${poId} berhasil disetujui & dirilis ke Supplier.`);
   };
 
   // ==========================================
@@ -1944,9 +1731,9 @@ export default function App() {
       const lastBal = accountTx.length > 0 ? accountTx[accountTx.length - 1].saldo : 0;
       const newBal = isKredit ? lastBal - manualCashForm.nominal : lastBal + manualCashForm.nominal;
       const next = [...cashLedger, {
-        id: `CSH-${manualCashForm.tanggal.replace(/-/g, '')}-${Math.floor(100 + Math.random() * 900)}`,
+        id: `CSH-${manualCashForm.tanggal.replace(/-/g, '')}-${crypto.randomUUID().slice(0, 8).toUpperCase()}`,
         tanggal: manualCashForm.tanggal,
-        ref: `MANUAL-${Math.floor(1000 + Math.random() * 9000)}`,
+        ref: `MANUAL-${crypto.randomUUID().slice(0, 8).toUpperCase()}`,
         keterangan: manualCashForm.keterangan,
         kategori: manualCashForm.kategori,
         debit: deb,
@@ -3213,7 +3000,7 @@ export default function App() {
         const accountTx = cashLedger.filter(c => (c.akun || 'Bank') === targetAkun);
         const lastBal = accountTx.length > 0 ? accountTx[accountTx.length - 1].saldo : 0;
         const nextLedger = [...cashLedger, {
-          id: `CSH-${poForm.tanggal.replace(/-/g, '')}-${Math.floor(100 + Math.random() * 900)}`,
+          id: `CSH-${poForm.tanggal.replace(/-/g, '')}-${crypto.randomUUID().slice(0, 8).toUpperCase()}`,
           tanggal: poForm.tanggal,
           ref: finalId,
           keterangan: `Pembelian Tunai ke Supplier ${poForm.supplier} [${finalId}]`,
@@ -3432,7 +3219,7 @@ export default function App() {
         const accountTx = cashLedger.filter(c => (c.akun || 'Bank') === targetAkun);
         const lastBal = accountTx.length > 0 ? accountTx[accountTx.length - 1].saldo : 0;
         const nextLedger = [...cashLedger, {
-          id: `CSH-${soForm.tanggal.replace(/-/g, '')}-${Math.floor(100 + Math.random() * 900)}`,
+          id: `CSH-${soForm.tanggal.replace(/-/g, '')}-${crypto.randomUUID().slice(0, 8).toUpperCase()}`,
           tanggal: soForm.tanggal,
           ref: nextId,
           keterangan: `Penjualan Tunai dari ${soForm.pelanggan} [${nextId}]`,
@@ -3534,23 +3321,168 @@ export default function App() {
 
   // Render login screen if login is active and user is not logged in
   if (isLoginActive && !isLoggedIn) {
+    // Mode Setup Wizard hanya aktif jika ditekan dari tombol Buat Perusahaan Baru
+    if (isSetupMode) {
+      const handleOnboardingSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
+        e.preventDefault();
+        const fd = new FormData(e.currentTarget);
+        const email = fd.get('email') as string;
+        const password = fd.get('password') as string;
+        const confirm = fd.get('confirm') as string;
+        
+        if (password !== confirm) {
+          return triggerToast('Password dan Konfirmasi Password tidak cocok!', 'error');
+        }
+
+        const hashed = await hashPassword(password);
+        
+        // Simpan ke localStorage untuk state saat ini
+        localStorage.setItem('ino_login_username', email);
+        localStorage.setItem('ino_login_password', hashed);
+        localStorage.setItem('ino_nama_toko', fd.get('namaToko') as string);
+        localStorage.setItem('ino_tipe_bisnis', fd.get('tipeBisnis') as string);
+        localStorage.setItem('ino_alamat_toko', fd.get('alamat') as string);
+        localStorage.setItem('ino_telp_toko', fd.get('telp') as string);
+        localStorage.setItem('ino_mata_uang', fd.get('mataUang') as string);
+        localStorage.setItem('ino_ppn_rate', fd.get('ppn') as string);
+        localStorage.setItem('ino_metode_hpp_default', fd.get('hpp') as string);
+        
+        // Sinkronisasi ke server GAS
+        triggerToast('Menyimpan ke server database...', 'info');
+        try {
+          await saveSettingsToGas([
+            { key: 'login_username', value: email },
+            { key: 'login_password', value: hashed },
+            { key: 'nama_toko', value: fd.get('namaToko') as string },
+            { key: 'tipe_bisnis', value: fd.get('tipeBisnis') as string },
+            { key: 'alamat_toko', value: fd.get('alamat') as string },
+            { key: 'telp_toko', value: fd.get('telp') as string },
+            { key: 'mata_uang', value: fd.get('mataUang') as string },
+            { key: 'ppn_rate', value: fd.get('ppn') as string },
+            { key: 'metode_hpp_default', value: fd.get('hpp') as string }
+          ]);
+          triggerToast('Setup Berhasil! Memuat ulang sistem...', 'success');
+          setTimeout(() => window.location.reload(), 1500);
+        } catch (error) {
+          triggerToast('Gagal menyimpan ke server: ' + (error as Error).message, 'error');
+        }
+      };
+
+      return (
+        <div className="min-h-screen flex items-center justify-center bg-slate-50 py-10 px-4">
+          <div className="bg-white p-8 rounded-2xl shadow-xl w-full max-w-3xl border border-slate-100">
+            <div className="text-center mb-8">
+              <h2 className="text-3xl font-black text-primary">Selamat Datang di INO ERP</h2>
+              <p className="text-secondary mt-2">Mari setup profil perusahaan & akun keamanan utama (Superadmin) Anda.</p>
+            </div>
+            <form onSubmit={handleOnboardingSubmit} className="space-y-6">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                <div className="space-y-4">
+                  <h3 className="font-bold border-b pb-2 text-slate-800">1. Data Perusahaan</h3>
+                  <div>
+                    <label className="block text-[11px] font-black text-secondary uppercase mb-1">Nama Usaha / Perusahaan</label>
+                    <input name="namaToko" type="text" required className="w-full p-2 border rounded-card focus:ring-1 focus:ring-primary bg-slate-50" placeholder="PT. Inovasi Sukses" />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-black text-secondary uppercase mb-1">Jenis Usaha</label>
+                    <select name="tipeBisnis" className="w-full p-2 border rounded-card focus:ring-1 focus:ring-primary bg-slate-50">
+                      <option value="Retail">Retail</option>
+                      <option value="Manufaktur">Manufaktur</option>
+                      <option value="Jasa">Jasa</option>
+                      <option value="Konsinyasi">Konsinyasi / Titip Jual</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-black text-secondary uppercase mb-1">Alamat Lengkap</label>
+                    <textarea name="alamat" required className="w-full p-2 border rounded-card focus:ring-1 focus:ring-primary bg-slate-50" rows={2}></textarea>
+                  </div>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-[11px] font-black text-secondary uppercase mb-1">Nomor Telepon</label>
+                      <input name="telp" type="text" required className="w-full p-2 border rounded-card focus:ring-1 focus:ring-primary bg-slate-50" />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-black text-secondary uppercase mb-1">Pajak PPN (%)</label>
+                      <input name="ppn" type="number" defaultValue="11" required className="w-full p-2 border rounded-card focus:ring-1 focus:ring-primary bg-slate-50" />
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-[11px] font-black text-secondary uppercase mb-1">Mata Uang</label>
+                      <input name="mataUang" type="text" defaultValue="Rp" required className="w-full p-2 border rounded-card focus:ring-1 focus:ring-primary bg-slate-50" />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-black text-secondary uppercase mb-1">Metode HPP</label>
+                      <select name="hpp" className="w-full p-2 border rounded-card focus:ring-1 focus:ring-primary bg-slate-50">
+                        <option value="Rata-rata">Rata-rata (Average)</option>
+                        <option value="FIFO">FIFO</option>
+                      </select>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="space-y-4">
+                  <h3 className="font-bold border-b pb-2 text-slate-800">2. Keamanan (Superadmin)</h3>
+                  <div className="bg-primary/10 p-3 rounded-card text-xs text-primary font-medium mb-4 border border-primary/20">
+                    ℹ️ Akun ini memiliki hak akses penuh ke seluruh fitur dan Laporan Keuangan ERP. Jaga kerahasiaan password Anda.
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-black text-secondary uppercase mb-1">Email Superadmin</label>
+                    <input name="email" type="email" required className="w-full p-2 border rounded-card focus:ring-1 focus:ring-primary bg-slate-50" placeholder="admin@perusahaan.com" />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-black text-secondary uppercase mb-1">Password</label>
+                    <input name="password" type="password" required className="w-full p-2 border rounded-card focus:ring-1 focus:ring-primary bg-slate-50" placeholder="Minimal 6 karakter" minLength={6} />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-black text-secondary uppercase mb-1">Konfirmasi Password</label>
+                    <input name="confirm" type="password" required className="w-full p-2 border rounded-card focus:ring-1 focus:ring-primary bg-slate-50" placeholder="Ulangi password di atas" minLength={6} />
+                  </div>
+                </div>
+              </div>
+
+              <div className="pt-6 border-t border-slate-100">
+                <button type="submit" className="w-full py-3.5 px-4 bg-primary text-white font-black uppercase tracking-wider rounded-card shadow-lg hover:bg-primary-hover transition-colors">
+                  🚀 Simpan & Mulai Gunakan ERP
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      );
+    }
+
     // ponytail: Autentikasi admin sederhana menggunakan state lokal & tombol bypass instan tanpa setup auth server / library eksternal rumit.
     const handleLoginSubmit = async (e: React.FormEvent) => {
       e.preventDefault();
       if (isLoggingIn) return;
+      if (lockoutUntil && Date.now() < lockoutUntil) {
+        const remainingSecs = Math.ceil((lockoutUntil - Date.now()) / 1000);
+        triggerToast(`Terlalu banyak percobaan. Coba lagi dalam ${remainingSecs} detik.`, 'error');
+        return;
+      }
       setIsLoggingIn(true);
       try {
-        const inputUser = loginInputUser.trim().toLowerCase();
-        const inputPass = loginInputPass.trim();
+        const result = await loginToServer(loginInputUser, loginInputPass);
 
-        const result = await validateLogin(inputUser, inputPass, loginUsername, loginPassword, settingUsersList);
-
-        if (result.success) {
+        if (result.ok && result.user) {
           setIsLoggedIn(true);
-          triggerToast(`Login Berhasil! Selamat datang ${result.isSuperadmin ? 'Superadmin' : result.matchedUser.nama}.`, 'success');
+          setCurrentUser(result.user);
+          setLoginAttempts(0);
+          setLockoutUntil(null);
+          triggerToast(`Login Berhasil! Selamat datang ${result.user.nama} (${result.user.role}).`, 'success');
         } else {
-          triggerToast('Gagal! Username atau Password/PIN salah. Silakan coba lagi atau gunakan tombol Bypass.', 'error');
+          const newAttempts = loginAttempts + 1;
+          setLoginAttempts(newAttempts);
+          if (newAttempts >= 5) {
+            setLockoutUntil(Date.now() + 30000); // 30 sec lockout
+            triggerToast('Gagal 5 kali berturut-turut. Anda diblokir selama 30 detik.', 'error');
+          } else {
+            triggerToast(result.error || `Gagal! Sisa percobaan: ${5 - newAttempts}`, 'error');
+          }
         }
+      } catch (err: any) {
+        triggerToast('Error koneksi server: ' + (err.message || 'Coba lagi.'), 'error');
       } finally {
         setIsLoggingIn(false);
       }
@@ -3573,13 +3505,22 @@ export default function App() {
             </div>
             <div>
               <label className="block text-sm font-medium text-gray-700">Password / PIN</label>
-              <input
-                type="password"
-                value={loginInputPass}
-                onChange={(e) => setLoginInputPass(e.target.value)}
-                className="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-2 border focus:ring-blue-500 focus:border-blue-500"
-                required
-              />
+              <div className="relative mt-1">
+                <input
+                  type={showPassword ? "text" : "password"}
+                  value={loginInputPass}
+                  onChange={(e) => setLoginInputPass(e.target.value)}
+                  className="block w-full rounded-md border-gray-300 shadow-sm p-2 border focus:ring-blue-500 focus:border-blue-500 pr-10"
+                  required
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword(!showPassword)}
+                  className="absolute inset-y-0 right-0 pr-3 flex items-center text-gray-500 hover:text-gray-700"
+                >
+                  {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+                </button>
+              </div>
             </div>
             <button
               type="submit"
@@ -3588,24 +3529,48 @@ export default function App() {
             >
               {isLoggingIn ? 'Memverifikasi...' : 'Masuk'}
             </button>
+            <div className="mt-4 pt-4 border-t border-gray-200">
+              <button
+                type="button"
+                onClick={() => {
+                  if (window.confirm('PERINGATAN: Tindakan ini akan menghapus seluruh pengaturan di memori browser ini dan membuka layar Setup. Anda yakin?')) {
+                    localStorage.clear();
+                    setIsSetupMode(true);
+                  }
+                }}
+                className="w-full flex justify-center py-2 px-4 border border-red-300 rounded-md shadow-sm text-sm font-medium text-red-600 bg-white hover:bg-red-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500"
+              >
+                Buat Perusahaan Baru (Reset & Setup)
+              </button>
+            </div>
           </form>
         </div>
       </div>
     );
   }
 
-  const filteredProducts = products.filter(p => p.sku.toLowerCase().includes(searchProductQuery.toLowerCase()) || p.nama.toLowerCase().includes(searchProductQuery.toLowerCase()));
-  const filteredPOs = purchaseOrders.filter(po => po.id.toLowerCase().includes(searchPoQuery.toLowerCase()) || po.supplier.toLowerCase().includes(searchPoQuery.toLowerCase()));
+  const filteredProducts = products.filter(p => p.sku.toLowerCase().includes(debouncedSearchProductQuery.toLowerCase()) || p.nama.toLowerCase().includes(debouncedSearchProductQuery.toLowerCase()));
+  const filteredPOs = purchaseOrders.filter(po => po.id.toLowerCase().includes(debouncedSearchPoQuery.toLowerCase()) || po.supplier.toLowerCase().includes(debouncedSearchPoQuery.toLowerCase()));
   const filteredSOs = salesOrders.filter(so => {
-    const matchSearch = so.id.toLowerCase().includes(searchSoQuery.toLowerCase()) || so.pelanggan.toLowerCase().includes(searchSoQuery.toLowerCase());
+    const matchSearch = so.id.toLowerCase().includes(debouncedSearchSoQuery.toLowerCase()) || so.pelanggan.toLowerCase().includes(debouncedSearchSoQuery.toLowerCase());
     let matchFilter = true;
     if (soFilterJenis === 'SO') matchFilter = !so.id.startsWith('POS-');
     else if (soFilterJenis === 'POS') matchFilter = so.id.startsWith('POS-');
     return matchSearch && matchFilter;
   });
 
+  const visibleNavGroups = NAV_GROUPS.filter(group => !group.allowedRoles || group.allowedRoles.includes(currentUser?.role || 'Superadmin')).map(group => ({
+    ...group,
+    children: group.children ? group.children.filter(child => !child.allowedRoles || child.allowedRoles.includes(currentUser?.role || 'Superadmin')) : undefined
+  })).filter(group => group.direct || (group.children && group.children.length > 0));
   return (
     <div className="min-h-screen flex flex-col bg-gray-50 font-sans">
+      {isGlobalLoading && (
+        <div className="fixed inset-0 bg-white/50 backdrop-blur-sm z-[9999] flex flex-col items-center justify-center">
+          <div className="w-12 h-12 border-4 border-primary/30 border-t-primary rounded-full animate-spin mb-4"></div>
+          <p className="text-primary font-bold text-sm tracking-widest animate-pulse">MENYINKRONKAN DATA...</p>
+        </div>
+      )}
       {/* Premium Warm Minimal Topbar Header */}
       <header className="bg-white text-primary px-6 md:px-8 py-3.5 flex flex-col md:flex-row justify-between items-center border-b border-slate-100 gap-4 no-print shadow-xs relative z-50 w-full max-w-none">
         <div className="flex items-center gap-2.5">
@@ -3636,7 +3601,8 @@ export default function App() {
           </div>
           {isLoggedIn && isLoginActive && (
             <button
-              onClick={() => {
+              onClick={async () => {
+                await logoutFromServer();
                 setIsLoggedIn(false);
                 setLoginInputUser('');
                 setLoginInputPass('');
@@ -3662,14 +3628,15 @@ export default function App() {
           >
             <Code size={14} />
           </button>
-
         </div>
       </header>
 
-      {/* Level 2: Horizontal Navigation Bar - Modern SaaS Style */}
+      {/* ======================= */}
+      {/* DESKTOP NAVIGATION BAR  */}
+      {/* ======================= */}
       <nav className="bg-white text-secondary border-b border-slate-100 px-6 md:px-8 py-2.5 hidden md:flex items-center justify-center no-print relative z-[60] w-full max-w-none">
         <div className="flex items-center justify-center w-full flex-wrap gap-4 max-w-none">
-          {NAV_GROUPS.map(group => {
+          {visibleNavGroups.map(group => {
             const active = isGroupActive(group);
             if (group.direct) {
               return (
@@ -4649,11 +4616,11 @@ export default function App() {
                       </div>
                       <div className="bg-slate-50 p-1.5 rounded-card border border-slate-100">
                         <span className="text-[11px] text-slate-400 block uppercase font-bold">Modal HPP</span>
-                        <span className="font-extrabold text-primary text-[11px] font-mono">Rp {currentProduct?.hpp.toLocaleString('id-ID') || 0}</span>
+                        <span className="font-extrabold text-primary text-[11px] font-mono">Rp {(currentProduct?.hpp || 0).toLocaleString('id-ID')}</span>
                       </div>
                       <div className="bg-slate-50 p-1.5 rounded-card border border-slate-100">
                         <span className="text-[11px] text-slate-400 block uppercase font-bold">Harga Jual</span>
-                        <span className="font-extrabold text-primary text-[11px] font-mono">Rp {currentProduct?.hj.toLocaleString('id-ID') || 0}</span>
+                        <span className="font-extrabold text-primary text-[11px] font-mono">Rp {(currentProduct?.hj || 0).toLocaleString('id-ID')}</span>
 
                       </div>
                     </div>
@@ -4810,10 +4777,10 @@ export default function App() {
                             {p.satuan}
                           </td>
                           <td className="px-4 py-3.5 font-bold text-primary text-right whitespace-nowrap tabular-nums">
-                            {p.hj > 0 ? `Rp ${p.hj.toLocaleString('id-ID')}` : '-'}
+                            {p.hj > 0 ? `Rp ${(p.hj || 0).toLocaleString('id-ID')}` : '-'}
                           </td>
                           <td className="px-4 py-3.5 text-right font-medium text-slate-700 whitespace-nowrap tabular-nums">
-                            Rp {p.hpp.toLocaleString('id-ID')}
+                            Rp {(p.hpp || 0).toLocaleString('id-ID')}
                           </td>
                           <td className="px-4 py-3.5 text-right whitespace-nowrap">
                             <div className="flex flex-col items-end gap-1">
@@ -5715,701 +5682,56 @@ export default function App() {
 
           {/* TAB 3: PURCHASE ORDER (PO) TRACKER */}
           {activeTab === 'purchase_order' && (
-            <div className="space-y-6">
-              {/* PO Platform Config Modal */}
-              {showPoPlatformModal && (
-                <div className="fixed inset-0 z-[100] bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto">
-                  <div className="bg-white rounded-card shadow-xl max-w-md w-full overflow-hidden flex flex-col relative my-auto">
-                    <div className="bg-slate-800 text-white py-4 px-6 flex justify-between items-center shrink-0">
-                      <h3 className="font-bold text-base flex items-center gap-2">
-                        <span>Pengaturan Platform Pembelian</span>
-                      </h3>
-                      <button onClick={() => setShowPoPlatformModal(false)} className="text-slate-400 hover:text-white transition-colors cursor-pointer">&times;</button>
-                    </div>
-                    <div className="p-6 overflow-y-auto space-y-4 max-h-[60vh]">
-                      <div className="flex justify-between items-center border-b pb-2 mb-3">
-                        <h4 className="text-sm font-black text-primary uppercase">Daftar Platform / Saluran</h4>
-                        <button
-                          type="button"
-                          onClick={() => setSettingPlatforms([...settingPlatforms, ''])}
-                          className="text-[11px] font-extrabold text-primary hover:underline cursor-pointer"
-                        >
-                          + Tambah Baru
-                        </button>
-                      </div>
-                      <div className="space-y-2">
-                        {settingPlatforms.map((plat, idx) => (
-                          <div key={idx} className="flex items-center gap-2">
-                            <input
-                              type="text"
-                              value={plat}
-                              onChange={(e) => {
-                                const arr = [...settingPlatforms];
-                                arr[idx] = e.target.value;
-                                setSettingPlatforms(arr);
-                              }}
-                              className="flex-1 p-2 border border-border rounded-card text-sm bg-white"
-                              placeholder="Nama platform..."
-                            />
-                            <button
-                              type="button"
-                              onClick={() => setSettingPlatforms(settingPlatforms.filter((_, i) => i !== idx))}
-                              className="p-2 text-danger hover:bg-danger/10 rounded-card cursor-pointer"
-                            >
-                              <Trash2 size={14} />
-                            </button>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                    <div className="bg-slate-50 p-4 border-t border-border text-right">
-                      <button
-                        onClick={() => setShowPoPlatformModal(false)}
-                        className="bg-primary hover:bg-primary-hover text-white px-6 py-2.5 rounded-card text-sm font-bold shadow-sm cursor-pointer"
-                      >
-                        Selesai
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {!showPoForm ? (
-                <div className="space-y-6">
-                  <div className="flex flex-col gap-4">
-                    <div className="flex justify-between items-center">
-                      <div>
-                        <h2 className="text-2xl font-bold text-text-primary">Purchase Order Tracker</h2>
-                        <p className="text-sm text-secondary">Monitor pemesanan barang dari supplier, logistik gudang, dan status tagihan</p>
-                      </div>
-                      <button
-                        onClick={() => {
-                          setPoForm({
-                            id: '', supplier: '', tanggal: new Date().toISOString().split('T')[0],
-                            metode: 'Kredit 30 Hari', items: [{ sku: '', nama: '', satuan: 'Pcs', qty: 1, harga: 0, subtotal: 0 }],
-                            pajak: false, catatan: '', platform: 'Toko Langsung'
-                          });
-                          setIsEditingPo(false);
-                          setShowPoForm(true);
-                        }}
-                        className="bg-primary hover:bg-primary-hover text-white px-4 py-2.5 rounded-card flex items-center gap-2 font-bold text-sm shadow transition-all"
-                      >
-                        <Plus size={16} />
-                        <span>Buat Purchase Order Baru</span>
-                      </button>
-
-                    </div>
-                    <div className="relative w-full">
-                      <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                        <svg className="h-4 w-4 text-slate-400" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
-                          <path fillRule="evenodd" d="M8 4a4 4 0 100 8 4 4 0 000-8zM2 8a6 6 0 1110.89 3.476l4.817 4.817a1 1 0 01-1.414 1.414l-4.816-4.816A6 6 0 012 8z" clipRule="evenodd" />
-                        </svg>
-                      </div>
-                      <input
-                        type="text"
-                        placeholder="Cari No. PO, tanggal, supplier, metode bayar, status..."
-                        value={searchPoQuery}
-                        onChange={(e) => setSearchPoQuery(e.target.value)}
-                        className="block w-full pl-9 pr-3 py-2.5 border border-border rounded-card text-sm bg-white focus:ring-1 focus:ring-primary focus:border-primary outline-none shadow-sm"
-                      />
-
-                    </div>
-                  </div>
-                  {/* Informative Tip Banner */}
-                  <div className="bg-sky-50 border border-sky-200 text-sky-800 p-3.5 rounded-card text-sm flex items-center gap-2.5 shadow-sm">
-                    <span className="text-base">💡</span>
-                    <span><strong>Tips Operasional:</strong> Klik pada baris transaksi manapun untuk membuka panel <strong>Detail Transaksi</strong>. Dari sana Anda bisa mengelola penerimaan barang logistik, melunasi pembayaran, mencatat retur produk ke supplier, serta melakukan pembatalan (void).</span>
-
-                  </div>
-                  {/* PO List Table */}
-                  <div className="bg-white border border-border rounded-card shadow-sm overflow-hidden">
-                    <div className="overflow-x-auto w-full">
-                      <table className="w-full text-sm text-left min-w-[1200px] border-collapse">
-                        <thead>
-                          <tr className="bg-primary text-white border-b border-teal-600 hover:bg-primary">
-                            <th className="px-4 py-3.5 font-semibold text-white whitespace-nowrap text-left min-w-[160px]">No. PO</th>
-                            <th className="px-4 py-3.5 font-semibold text-white whitespace-nowrap text-left min-w-[130px]">Tanggal PO</th>
-                            <th className="px-4 py-3.5 font-semibold text-white whitespace-nowrap text-left min-w-[200px]">Supplier</th>
-                            <th className="px-4 py-3.5 font-semibold text-white whitespace-nowrap text-left">Tipe Tagihan</th>
-                            <th className="px-4 py-3.5 font-semibold text-white whitespace-nowrap text-right">Total Tagihan</th>
-                            <th className="px-4 py-3.5 font-semibold text-white whitespace-nowrap text-center">Status Logistik</th>
-                            <th className="px-4 py-3.5 font-semibold text-white whitespace-nowrap text-center">Status Keuangan</th>
-                            <th className="px-4 py-3.5 font-semibold text-white whitespace-nowrap text-center w-[120px]">Aksi</th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-slate-100">
-                          {filteredPOs.length === 0 ? (
-                            <tr>
-                              <td colSpan={8} className="p-0">
-                                <EmptyState
-                                  icon={ShoppingCart}
-                                  title="Tidak Ada Purchase Order"
-                                  description="Data PO tidak ditemukan atau kosong. Buat PO baru untuk memulai pembelian."
-                                  actionLabel="Buat PO Baru"
-                                  onAction={() => { setPoForm({ id: '', supplier: '', tanggal: new Date().toISOString().split('T')[0], metode: 'Kredit 30 Hari', items: [{ sku: '', nama: '', satuan: 'Pcs', qty: 1, harga: 0, subtotal: 0 }], pajak: false, catatan: '', platform: 'Toko Langsung' }); setIsEditingPo(false); setShowPoForm(true); }}
-                                  className="border-0 rounded-none shadow-none"
-                                />
-                              </td>
-                            </tr>
-                          ) : filteredPOs.map(po => (
-                            <tr key={po.id} onClick={() => { setSelectedPo(po); setPoActionForm(null); }} className="even:bg-slate-50/70 hover:bg-slate-50/80 cursor-pointer transition-colors">
-                              <td className="px-4 py-3.5 font-mono font-bold whitespace-nowrap text-primary">{po.id}</td>
-                              <td className="px-4 py-3.5 whitespace-nowrap text-slate-700">{po.tanggal}</td>
-                              <td className="px-4 py-3.5 font-semibold text-slate-800 line-clamp-1">{po.supplier}</td>
-                              <td className="px-4 py-3.5 text-slate-600 whitespace-nowrap">{po.metode}</td>
-                              <td className="px-4 py-3.5 font-bold text-right tabular-nums whitespace-nowrap">Rp {po.grandTotal.toLocaleString('id-ID')}</td>
-                              <td className="px-4 py-3.5 text-center whitespace-nowrap">
-                                {po.hasReturn ? (
-                                  <span className="px-2 py-1 rounded text-[11px] font-bold bg-amber-100 text-amber-800 border border-amber-300">
-                                    {po.statusLogistik === 'Retur Penuh' || po.statusLogistik === 'Retur Sebagian' ? po.statusLogistik.toUpperCase() : `${po.statusLogistik.toUpperCase()} (RETUR)`}
-                                  </span>
-                                ) : (
-                                  <Badge variant={po.statusLogistik === 'Diterima' ? 'success' : po.statusLogistik === 'Menunggu' ? 'warning' : 'neutral'}>
-                                    {po.statusLogistik}
-                                  </Badge>
-                                )}
-                              </td>
-                              <td className="px-4 py-3.5 text-center whitespace-nowrap">
-                                {po.hasReturn ? (
-                                  <span className="px-2 py-1 rounded text-[11px] font-bold bg-amber-100 text-amber-800 border border-amber-300">
-                                    {po.statusBayar === 'Lunas' ? 'LUNAS (KOREKSI RETUR)' : 'BELUM DIBAYAR (DIPOTONG RETUR)'}
-                                  </span>
-                                ) : (
-                                  <Badge variant={po.statusBayar === 'Lunas' ? 'success' : po.statusBayar === 'Belum Dibayar' ? 'error' : 'neutral'}>
-                                    {po.statusBayar}
-                                  </Badge>
-                                )}
-                              </td>
-                              <td className="px-4 py-3.5 text-center whitespace-nowrap">
-                                <div className="flex justify-center items-center gap-2">
-                                  <button
-                                    onClick={(e) => { e.stopPropagation(); handleVoidPO(po.id); }}
-                                    className="px-3 py-1.5 text-[11px] font-bold uppercase tracking-wider bg-danger/10 text-danger hover:bg-danger hover:text-white rounded-md transition-all shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
-                                    disabled={po.statusLogistik === 'Void'}
-                                  >
-                                    Void
-                                  </button>
-                                </div>
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
-                </div>
-              ) : (
-                // PO Creation Panel
-                <div className="bg-white border border-border rounded-card shadow-sm p-6 space-y-6">
-                  <div className="border-b border-border pb-4 flex justify-between items-center">
-                    <h3 className="font-bold text-text-primary text-lg">Buat Purchase Order Baru (Batch Mode)</h3>
-                    <button onClick={() => setShowPoForm(false)} className="text-slate-400 hover:text-secondary text-xl font-bold">&times;</button>
-
-                  </div>
-                  <div className="grid grid-cols-1 md:grid-cols-5 gap-4 bg-gray-50 p-4 rounded-card">
-                    <div className="flex flex-col gap-1">
-                      <label className="text-[11px] font-bold text-text-secondary uppercase">Supplier (Kepada)</label>
-                      <SearchableSelect
-                        value={poForm.supplier}
-                        onChange={(val) => setPoForm({ ...poForm, supplier: val })}
-                        options={suppliers.map((s: any) => ({ label: s.nama, value: s.nama }))}
-                        allowCustom={true}
-                        placeholder="Ketik/Pilih Supplier"
-                      />
-                    </div>
-                    <div className="flex flex-col gap-1">
-                      <div className="flex justify-between items-center">
-                        <label className="text-[11px] font-bold text-text-secondary uppercase">Platform</label>
-                        <button type="button" onClick={() => setShowPoPlatformModal(true)} className="text-[11px] text-primary hover:underline font-bold cursor-pointer">+ Tambah / Atur Platform</button>
-                      </div>
-                      <select
-                        value={poForm.platform}
-                        onChange={(e) => setPoForm({ ...poForm, platform: e.target.value })}
-                        className="p-2 border border-border rounded-card bg-white text-sm"
-                      >
-                        {settingPlatforms.map(p => <option key={p} value={p}>{p}</option>)}
-                      </select>
-                    </div>
-                    <div className="flex flex-col gap-1">
-                      <label className="text-[11px] font-bold text-text-secondary uppercase">Tanggal PO</label>
-                      <input
-                        type="date"
-                        value={poForm.tanggal}
-                        onChange={(e) => setPoForm({ ...poForm, tanggal: e.target.value })}
-                        className="p-2 border border-border rounded-card text-sm bg-white"
-                      />
-                    </div>
-                    <div className="flex flex-col gap-1">
-                      <label className="text-[11px] font-bold text-text-secondary uppercase">Termin / Metode</label>
-                      <select
-                        value={poForm.metode}
-                        onChange={(e) => setPoForm({ ...poForm, metode: e.target.value })}
-                        className="p-2 border border-border rounded-card bg-white text-sm"
-                      >
-                        <option value="Tunai">Tunai Lunas</option>
-                        <option value="Kredit 14 Hari">Kredit 14 Hari</option>
-                        <option value="Kredit 30 Hari">Kredit 30 Hari</option>
-                      </select>
-                    </div>
-                    <div className="flex flex-col gap-1">
-                      <label className="text-[11px] font-bold text-text-secondary uppercase">Pajak (PPN 12%)</label>
-                      <label className="flex items-center gap-2 mt-2 cursor-pointer">
-                        <input
-                          type="checkbox"
-                          checked={poForm.pajak}
-                          onChange={(e) => setPoForm({ ...poForm, pajak: e.target.checked })}
-                          className="w-4 h-4 accent-primary"
-                        />
-                        <span className="text-sm font-semibold text-secondary">Aktifkan PPN 12%</span>
-                      </label>
-
-                    </div>
-                  </div>
-                  {/* PO Items Table */}
-                  <table className="w-full text-sm text-left">
-                    <thead>
-                      <tr className="bg-gray-100 text-secondary text-sm font-semibold uppercase">
-                        <th className="py-3 px-4 w-[45%]">Pilih Barang [SKU]</th>
-                        <th className="py-3 px-4 text-center">Qty</th>
-                        <th className="py-3 px-4 text-right">Harga Unit (HPP)</th>
-                        <th className="py-3 px-4 text-right">Subtotal</th>
-                        <th className="py-3 px-4 text-center">Aksi</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {poForm.items.map((item, idx) => (
-                        <tr key={idx} className="border-b border-border">
-                          <td className="py-3 px-4">
-                            <SearchableSelect
-                              value={item.sku}
-                              onChange={(val) => handlePoItemChange(idx, val, item.qty, item.harga)}
-                              options={products.map((p: any) => ({ label: `[${p.sku}] ${p.nama}`, value: p.sku }))}
-                              placeholder="-- Pilih Barang --"
-                            />
-                          </td>
-                          <td className="py-3 px-4 text-center">
-                            <input
-                              type="number" min="0"
-                              value={item.qty}
-                              onChange={(e) => handlePoItemChange(idx, item.sku, parseInt(e.target.value) || 0, item.harga)}
-                              className="w-16 p-2 border border-border rounded text-center font-mono"
-                            />
-                          </td>
-                          <td className="py-3 px-4">
-                            <input
-                              type="number" min="0"
-                              value={item.harga}
-                              onChange={(e) => handlePoItemChange(idx, item.sku, item.qty, parseInt(e.target.value) || 0)}
-                              className="w-full p-2 border border-border rounded text-right font-mono"
-                            />
-                          </td>
-                          <td className="py-3 px-4 text-right font-mono font-bold">
-                            Rp {item.subtotal.toLocaleString('id-ID')}
-                          </td>
-                          <td className="py-3 px-4 text-center">
-                            <button
-                              onClick={() => handleRemovePoItem(idx)}
-                              className="text-danger hover:text-danger"
-                            >
-                              <Trash2 size={16} />
-                            </button>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-
-                  <button
-                    onClick={handleAddPoItem}
-                    className="w-full py-2 border border-dashed border-primary text-primary hover:bg-green-50 rounded-card font-bold text-sm"
-                  >
-                    + Tambah Baris Baru
-                  </button>
-
-                  <div className="flex justify-between items-start border-t border-border pt-6">
-                    <div className="w-1/2 flex flex-col gap-1.5">
-                      <label className="text-sm font-bold text-secondary uppercase">Memo / Catatan PO</label>
-                      <textarea
-                        value={poForm.catatan}
-                        onChange={(e) => setPoForm({ ...poForm, catatan: e.target.value })}
-                        placeholder="Memo logs..."
-                        className="border border-border p-2.5 rounded-card text-sm h-16 resize-none"
-                      />
-                    </div>
-                    <div className="w-80 bg-gray-50 p-4 rounded-card space-y-2 text-sm font-semibold">
-                      <div className="flex justify-between text-text-secondary">
-                        <span>Subtotal</span>
-                        <span>Rp {poForm.items.reduce((sum, item) => sum + item.subtotal, 0).toLocaleString('id-ID')}</span>
-                      </div>
-                      {poForm.pajak && (
-                        <div className="flex justify-between text-text-secondary">
-                          <span>PPN (12%)</span>
-                          <span>Rp {Math.round(poForm.items.reduce((sum, item) => sum + item.subtotal, 0) * 0.12).toLocaleString('id-ID')}</span>
-                        </div>
-                      )}
-                      <div className="flex justify-between text-base font-bold text-text-primary border-t border-border pt-2">
-                        <span>TOTAL AKHIR</span>
-                        <span className="text-primary">
-                          Rp {(
-                            poForm.items.reduce((sum, item) => sum + item.subtotal, 0) +
-                            (poForm.pajak ? Math.round(poForm.items.reduce((sum, item) => sum + item.subtotal, 0) * 0.12) : 0)
-                          ).toLocaleString('id-ID')}
-                        </span>
-
-                      </div>
-                    </div>
-                  </div>
-                  <div className="flex justify-end gap-3 border-t border-border pt-4">
-                    <button onClick={() => setShowPoForm(false)} className="px-4 py-2.5 text-sm font-semibold border border-border hover:bg-gray-100 rounded-card">Batal</button>
-                    <button
-                      onClick={() => handleSavePO(true)}
-                      disabled={isSavingPO}
-                      className={`px-4 py-2.5 text-sm font-semibold rounded-card ${isSavingPO ? 'bg-text-primary/70 text-slate-300 cursor-not-allowed flex items-center justify-center gap-2' : 'bg-text-primary text-slate-300 hover:bg-text-primary-hover'}`}
-                    >
-                      {isSavingPO ? (
-                        <>
-                          <div className="w-4 h-4 border-2 border-slate-300/30 border-t-slate-300 rounded-full animate-spin" />
-                          <span>Menyimpan...</span>
-                        </>
-                      ) : (
-                        'Simpan Draft'
-                      )}
-                    </button>
-                    <button
-                      onClick={() => handleSavePO(false)}
-                      disabled={isSavingPO}
-                      className={`px-5 py-2.5 text-sm font-semibold text-white rounded-card ${isSavingPO ? 'bg-primary/70 cursor-not-allowed flex items-center justify-center gap-2' : 'bg-primary hover:bg-primary-hover'}`}
-                    >
-                      {isSavingPO ? (
-                        <>
-                          <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                          <span>Menyimpan...</span>
-                        </>
-                      ) : (
-                        'Rilis & Kirim PO'
-                      )}
-                    </button>
-                  </div>
-                </div>
-              )}
-            </div>
-
+            <PurchaseOrderTab
+              products={products}
+              suppliers={suppliers}
+              settingPlatforms={settingPlatforms}
+              setSettingPlatforms={setSettingPlatforms}
+              showPoPlatformModal={showPoPlatformModal}
+              setShowPoPlatformModal={setShowPoPlatformModal}
+              showPoForm={showPoForm}
+              setShowPoForm={setShowPoForm}
+              isEditingPo={isEditingPo}
+              setIsEditingPo={setIsEditingPo}
+              poForm={poForm}
+              setPoForm={setPoForm}
+              searchPoQuery={searchPoQuery}
+              setSearchPoQuery={setSearchPoQuery}
+              filteredPOs={filteredPOs}
+              setSelectedPo={setSelectedPo}
+              setPoActionForm={setPoActionForm}
+              handleVoidPO={handleVoidPO}
+              handlePoItemChange={handlePoItemChange}
+              handleRemovePoItem={handleRemovePoItem}
+              handleAddPoItem={handleAddPoItem}
+              handleSavePO={handleSavePO}
+              isSavingPO={isSavingPO}
+            />
           )}
 
           {/* TAB 4: SALES ORDER (SO) TRACKER */}
           {activeTab === 'sales_order' && (
-            <div className="space-y-6">
-              {!showSoForm ? (
-                <div className="space-y-6">
-                  <div className="flex flex-col gap-4">
-                    <div className="flex justify-between items-center">
-                      <div>
-                        <h2 className="text-2xl font-bold text-text-primary">Sales Order Tracker</h2>
-                        <p className="text-sm text-secondary">Monitor pemesanan barang dari customer B2B, logistik gudang, dan piutang</p>
-                      </div>
-                      <button
-                        onClick={() => {
-                          setSoForm({
-                            id: '', pelanggan: '', tanggal: new Date().toISOString().split('T')[0],
-                            metode: 'Tempo 30 Hari', items: [{ sku: '', nama: '', satuan: 'Pcs', qty: 1, harga: 0, subtotal: 0 }],
-                            pajak: false, catatan: '', platform: 'Toko Langsung'
-                          });
-                          setIsEditingSo(false);
-                          setShowSoForm(true);
-                        }}
-                        className="bg-primary hover:bg-primary-hover text-white px-4 py-2.5 rounded-card flex items-center gap-2 font-bold text-sm shadow transition-all"
-                      >
-                        <Plus size={16} />
-                        <span>Buat Sales Order Baru</span>
-                      </button>
-
-                    </div>
-                    <div className="relative w-full">
-                      <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                        <svg className="h-4 w-4 text-slate-400" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
-                          <path fillRule="evenodd" d="M8 4a4 4 0 100 8 4 4 0 000-8zM2 8a6 6 0 1110.89 3.476l4.817 4.817a1 1 0 01-1.414 1.414l-4.816-4.816A6 6 0 012 8z" clipRule="evenodd" />
-                        </svg>
-                      </div>
-                      <input
-                        type="text"
-                        placeholder="Cari No. SO, tanggal, customer, metode bayar, status..."
-                        value={searchSoQuery}
-                        onChange={(e) => setSearchSoQuery(e.target.value)}
-                        className="block w-full pl-9 pr-3 py-2.5 border border-border rounded-card text-sm bg-white focus:ring-1 focus:ring-primary focus:border-primary outline-none shadow-sm"
-                      />
-
-                    </div>
-                  </div>
-                  {/* Informative Tip Banner */}
-                  <div className="bg-sky-50 border border-sky-200 text-sky-800 p-3.5 rounded-card text-sm flex items-center gap-2.5 shadow-sm">
-                    <span className="text-base">💡</span>
-                    <span><strong>Tips Operasional:</strong> Klik pada baris transaksi manapun untuk membuka panel <strong>Detail Transaksi</strong>. Dari sana Anda bisa mengelola pengiriman barang, melunasi pembayaran, mencatat retur barang dari customer, serta melakukan pembatalan (void).</span>
-
-                  </div>
-                  {/* SO List Table */}
-                  <div className="bg-white border border-border rounded-card shadow-sm overflow-hidden">
-                    <div className="overflow-x-auto w-full">
-                      <table className="w-full text-sm text-left min-w-[1200px] border-collapse">
-                        <thead>
-                          <tr className="bg-primary text-white border-b border-teal-600 hover:bg-primary">
-                            <th className="px-4 py-3.5 font-semibold text-white whitespace-nowrap text-left min-w-[160px]">No. SO</th>
-                            <th className="px-4 py-3.5 font-semibold text-white whitespace-nowrap text-left min-w-[130px]">Tanggal SO</th>
-                            <th className="px-4 py-3.5 font-semibold text-white whitespace-nowrap text-left min-w-[200px]">Customer</th>
-                            <th className="px-4 py-3.5 font-semibold text-white whitespace-nowrap text-left">Metode Bayar</th>
-                            <th className="px-4 py-3.5 font-semibold text-white whitespace-nowrap text-right">Total Tagihan</th>
-                            <th className="px-4 py-3.5 font-semibold text-white whitespace-nowrap text-center">Status Logistik</th>
-                            <th className="px-4 py-3.5 font-semibold text-white whitespace-nowrap text-center">Status Keuangan</th>
-                            <th className="px-4 py-3.5 font-semibold text-white whitespace-nowrap text-center w-[120px]">Aksi</th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-slate-100">
-                          {filteredSOs.length === 0 ? (
-                            <tr>
-                              <td colSpan={8} className="p-0">
-                                <EmptyState
-                                  icon={FileText}
-                                  title="Tidak Ada Sales Order"
-                                  description="Data SO tidak ditemukan atau kosong. Buat SO baru untuk mencatat penjualan."
-                                  actionLabel="Buat SO Baru"
-                                  onAction={() => { setSoForm({ id: '', pelanggan: '', tanggal: new Date().toISOString().split('T')[0], metode: 'Tempo 30 Hari', items: [{ sku: '', nama: '', satuan: 'Pcs', qty: 1, harga: 0, subtotal: 0 }], pajak: false, catatan: '', platform: 'Toko Langsung' }); setIsEditingSo(false); setShowSoForm(true); }}
-                                  className="border-0 rounded-none shadow-none"
-                                />
-                              </td>
-                            </tr>
-                          ) : filteredSOs.map(so => (
-                            <tr key={so.id} onClick={() => { setSelectedSo(so); setSoActionForm(null); }} className="even:bg-slate-50/70 hover:bg-slate-50/80 cursor-pointer transition-colors">
-                              <td className="px-4 py-3.5 font-mono font-bold whitespace-nowrap text-primary">
-                                {so.id}
-                                {so.id.startsWith('POS-') && (
-                                  <span className="ml-2 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-purple-100 text-purple-800 border border-purple-200 uppercase tracking-wider">POS</span>
-                                )}
-                              </td>
-                              <td className="px-4 py-3.5 whitespace-nowrap text-slate-700">{so.tanggal}</td>
-                              <td className="px-4 py-3.5 font-semibold text-slate-800 line-clamp-1">{so.pelanggan}</td>
-                              <td className="px-4 py-3.5 text-slate-600 whitespace-nowrap">{so.metode}</td>
-                              <td className="px-4 py-3.5 font-bold text-right tabular-nums whitespace-nowrap">Rp {so.grandTotal.toLocaleString('id-ID')}</td>
-                              <td className="px-4 py-3.5 text-center whitespace-nowrap">
-                                {so.hasReturn ? (
-                                  <span className="px-2 py-1 rounded text-[11px] font-bold bg-amber-100 text-amber-800 border border-amber-300">
-                                    {so.statusLogistik === 'Retur Penuh' || so.statusLogistik === 'Retur Sebagian' ? so.statusLogistik.toUpperCase() : `${so.statusLogistik.toUpperCase()} (RETUR)`}
-                                  </span>
-                                ) : (
-                                  <Badge variant={so.statusLogistik === 'Terkirim' || so.statusLogistik === 'Selesai' ? 'success' : so.statusLogistik === 'Void' ? 'neutral' : 'warning'}>
-                                    {so.statusLogistik}
-                                  </Badge>
-                                )}
-                              </td>
-                              <td className="px-4 py-3.5 text-center whitespace-nowrap">
-                                {so.hasReturn ? (
-                                  <span className="px-2 py-1 rounded text-[11px] font-bold bg-amber-100 text-amber-800 border border-amber-300">
-                                    {so.statusBayar === 'Lunas' ? 'LUNAS (KOREKSI RETUR)' : 'BELUM LUNAS (DIPOTONG RETUR)'}
-                                  </span>
-                                ) : (
-                                  <Badge variant={so.statusBayar === 'Lunas' ? 'success' : so.statusBayar === 'Belum Lunas' ? 'error' : 'neutral'}>
-                                    {so.statusBayar}
-                                  </Badge>
-                                )}
-                              </td>
-                              <td className="px-4 py-3.5 text-center whitespace-nowrap">
-                                <div className="flex justify-center items-center gap-2">
-                                  <button
-                                    onClick={(e) => { e.stopPropagation(); handleVoidSO(so.id); }}
-                                    className="px-3 py-1.5 text-[11px] font-bold uppercase tracking-wider bg-danger/10 text-danger hover:bg-danger hover:text-white rounded-md transition-all shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
-                                    disabled={so.statusLogistik === 'Void'}
-                                  >
-                                    Void
-                                  </button>
-                                </div>
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
-                </div>
-              ) : (
-                // SO Creation Panel (Batch mode)
-                <div className="bg-white border border-border rounded-card shadow-sm p-6 space-y-6">
-                  <div className="border-b border-border pb-4 flex justify-between items-center">
-                    <h3 className="font-bold text-text-primary text-lg">Buat Sales Order Baru (Batch Mode)</h3>
-                    <button onClick={() => setShowSoForm(false)} className="text-slate-400 hover:text-secondary text-xl font-bold">&times;</button>
-
-                  </div>
-                  <div className="grid grid-cols-1 md:grid-cols-4 gap-4 bg-gray-50 p-4 rounded-card">
-                    <div className="flex flex-col gap-1">
-                      <label className="text-[11px] font-bold text-text-secondary uppercase">Pelanggan (Customer)</label>
-                      <SearchableSelect
-                        value={soForm.pelanggan}
-                        onChange={(val) => setSoForm({ ...soForm, pelanggan: val })}
-                        options={customers.map((c: any) => ({ label: c.nama, value: c.nama }))}
-                        allowCustom={true}
-                        placeholder="Ketik/Pilih Pelanggan"
-                      />
-                    </div>
-                    <div className="flex flex-col gap-1">
-                      <label className="text-[11px] font-bold text-text-secondary uppercase">Tanggal SO</label>
-                      <input
-                        type="date"
-                        value={soForm.tanggal}
-                        onChange={(e) => setSoForm({ ...soForm, tanggal: e.target.value })}
-                        className="p-2 border border-border rounded-card text-sm bg-white"
-                      />
-                    </div>
-                    <div className="flex flex-col gap-1">
-                      <label className="text-[11px] font-bold text-text-secondary uppercase">Termin / Metode</label>
-                      <select
-                        value={soForm.metode}
-                        onChange={(e) => setSoForm({ ...soForm, metode: e.target.value })}
-                        className="p-2 border border-border rounded-card bg-white text-sm"
-                      >
-                        <option value="Tunai">Tunai Lunas</option>
-                        <option value="Tempo 14 Hari">Tempo 14 Hari</option>
-                        <option value="Tempo 30 Hari">Tempo 30 Hari</option>
-                      </select>
-                    </div>
-                    <div className="flex flex-col gap-1">
-                      <label className="text-[11px] font-bold text-text-secondary uppercase">Pajak (PPN 12%)</label>
-                      <label className="flex items-center gap-2 mt-2 cursor-pointer">
-                        <input
-                          type="checkbox"
-                          checked={soForm.pajak}
-                          onChange={(e) => setSoForm({ ...soForm, pajak: e.target.checked })}
-                          className="w-4 h-4 accent-primary"
-                        />
-                        <span className="text-sm font-semibold text-secondary">Aktifkan PPN 12%</span>
-                      </label>
-
-                    </div>
-                  </div>
-                  {/* SO Items Table */}
-                  <table className="w-full text-sm text-left">
-                    <thead>
-                      <tr className="bg-gray-100 text-secondary text-sm font-semibold uppercase">
-                        <th className="py-3 px-4 w-[45%]">Pilih Roti / Barang Jadi [SKU]</th>
-                        <th className="py-3 px-4 text-center">Qty</th>
-                        <th className="py-3 px-4 text-right">Harga Jual</th>
-                        <th className="py-3 px-4 text-right">Subtotal</th>
-                        <th className="py-3 px-4 text-center">Aksi</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {soForm.items.map((item, idx) => (
-                        <tr key={idx} className="border-b border-border">
-                          <td className="py-3 px-4">
-                            <SearchableSelect
-                              value={item.sku}
-                              onChange={(val) => handleSoItemChange(idx, 'sku', val)}
-                              options={products.filter((p: any) => p.kategori === 'Barang Jadi').map((p: any) => ({ label: `[${p.sku}] ${p.nama} (Stok: ${p.stok})`, value: p.sku }))}
-                              placeholder="-- Pilih Barang Jadi --"
-                            />
-                          </td>
-                          <td className="py-3 px-4 text-center">
-                            <input
-                              type="number" min="0"
-                              value={item.qty}
-                              onChange={(e) => handleSoItemChange(idx, 'qty', parseInt(e.target.value) || 0)}
-                              className="w-16 p-2 border border-border rounded text-center font-mono"
-                            />
-                          </td>
-                          <td className="py-3 px-4">
-                            <input
-                              type="number" min="0"
-                              value={item.harga}
-                              onChange={(e) => handleSoItemChange(idx, 'harga', parseInt(e.target.value) || 0)}
-                              className="w-full p-2 border border-border rounded text-right font-mono"
-                            />
-                          </td>
-                          <td className="py-3 px-4 text-right font-mono font-bold">
-                            Rp {item.subtotal.toLocaleString('id-ID')}
-                          </td>
-                          <td className="py-3 px-4 text-center">
-                            <button
-                              onClick={() => handleRemoveSoItem(idx)}
-                              className="text-danger hover:text-danger"
-                            >
-                              <Trash2 size={16} />
-                            </button>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-
-                  <button
-                    onClick={handleAddSoItem}
-                    className="w-full py-2 border border-dashed border-primary text-primary hover:bg-green-50 rounded-card font-bold text-sm"
-                  >
-                    + Tambah Baris Baru
-                  </button>
-
-                  <div className="flex justify-between items-start border-t border-border pt-6">
-                    <div className="w-1/2 flex flex-col gap-1.5">
-                      <label className="text-sm font-bold text-secondary uppercase">Catatan Pengiriman / Memo</label>
-                      <textarea
-                        value={soForm.catatan}
-                        onChange={(e) => setSoForm({ ...soForm, catatan: e.target.value })}
-                        placeholder="Memo logs..."
-                        className="border border-border p-2.5 rounded-card text-sm h-16 resize-none"
-                      />
-                    </div>
-                    <div className="w-80 bg-gray-50 p-4 rounded-card space-y-2 text-sm font-semibold">
-                      <div className="flex justify-between text-text-secondary">
-                        <span>Subtotal</span>
-                        <span>Rp {soForm.items.reduce((sum, item) => sum + item.subtotal, 0).toLocaleString('id-ID')}</span>
-                      </div>
-                      {soForm.pajak && (
-                        <div className="flex justify-between text-text-secondary">
-                          <span>PPN (12%)</span>
-                          <span>Rp {Math.round(soForm.items.reduce((sum, item) => sum + item.subtotal, 0) * 0.12).toLocaleString('id-ID')}</span>
-                        </div>
-                      )}
-                      <div className="flex justify-between text-base font-bold text-text-primary border-t border-border pt-2">
-                        <span>TOTAL AKHIR</span>
-                        <span className="text-primary">
-                          Rp {(
-                            soForm.items.reduce((sum, item) => sum + item.subtotal, 0) +
-                            (soForm.pajak ? Math.round(soForm.items.reduce((sum, item) => sum + item.subtotal, 0) * 0.12) : 0)
-                          ).toLocaleString('id-ID')}
-                        </span>
-
-                      </div>
-                    </div>
-                  </div>
-                  <div className="flex justify-end gap-3 border-t border-border pt-4">
-                    <button onClick={() => setShowSoForm(false)} className="px-4 py-2.5 text-sm font-semibold border border-border hover:bg-gray-100 rounded-card">Batal</button>
-                    <button
-                      onClick={() => handleSaveSalesOrder(true)}
-                      disabled={isSavingSO}
-                      className={`px-4 py-2.5 text-sm font-semibold rounded-card ${isSavingSO ? 'bg-text-primary/70 text-slate-300 cursor-not-allowed flex items-center justify-center gap-2' : 'bg-text-primary text-slate-300 hover:bg-text-primary-hover'}`}
-                    >
-                      {isSavingSO ? (
-                        <>
-                          <div className="w-4 h-4 border-2 border-slate-300/30 border-t-slate-300 rounded-full animate-spin" />
-                          <span>Menyimpan...</span>
-                        </>
-                      ) : (
-                        'Simpan Draft'
-                      )}
-                    </button>
-                    <button
-                      onClick={() => handleSaveSalesOrder(false)}
-                      disabled={isSavingSO}
-                      className={`px-5 py-2.5 text-sm font-semibold text-white rounded-card ${isSavingSO ? 'bg-primary/70 cursor-not-allowed flex items-center justify-center gap-2' : 'bg-primary hover:bg-primary-hover'}`}
-                    >
-                      {isSavingSO ? (
-                        <>
-                          <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                          <span>Menyimpan...</span>
-                        </>
-                      ) : (
-                        'Rilis & Kirim SO'
-                      )}
-                    </button>
-                  </div>
-                </div>
-              )}
-            </div>
+            <SalesOrderTab
+              showSoForm={showSoForm}
+              setShowSoForm={setShowSoForm}
+              searchSoQuery={searchSoQuery}
+              setSearchSoQuery={setSearchSoQuery}
+              soForm={soForm}
+              setSoForm={setSoForm}
+              isEditingSo={isEditingSo}
+              setIsEditingSo={setIsEditingSo}
+              filteredSOs={filteredSOs}
+              setSelectedSo={setSelectedSo}
+              setSoActionForm={setSoActionForm}
+              customers={customers}
+              products={products}
+              handleSoItemChange={handleSoItemChange}
+              handleRemoveSoItem={handleRemoveSoItem}
+              handleAddSoItem={handleAddSoItem}
+              handleSaveSalesOrder={handleSaveSalesOrder}
+              handleVoidSO={handleVoidSO}
+              isSavingSO={isSavingSO}
+            />
           )}
 
           {/* ponytail: pertahankan fitur ekspor 2 level pada modul Kartu Pelanggan & Supplier */}
@@ -6940,8 +6262,8 @@ export default function App() {
 
             // Filter products based on search term, SKU selection, and Qty = 0 filter
             const filteredLedger = ledgerData.filter(item => {
-              const matchesSearch = item.sku.toLowerCase().includes(stokSearchTerm.toLowerCase()) ||
-                item.nama.toLowerCase().includes(stokSearchTerm.toLowerCase());
+              const matchesSearch = item.sku.toLowerCase().includes(debouncedStokSearchTerm.toLowerCase()) ||
+                item.nama.toLowerCase().includes(debouncedStokSearchTerm.toLowerCase());
 
               const matchesSelectedSku = stokSelectedSkus.length === 0 || stokSelectedSkus.includes(item.sku);
 
@@ -7120,9 +6442,9 @@ export default function App() {
                     {stokViewMode === 'daily' && `Periode Laporan Harian: ${analitikStartDate} s/d ${analitikEndDate}`}
                     {stokViewMode === 'three_days' && `Periode Laporan 3 Harian: ${analitikStartDate} s/d ${analitikEndDate}`}
                     {stokViewMode === 'weekly' && `Periode Laporan Mingguan: ${analitikStartDate} s/d ${analitikEndDate}`}
-                    {stokViewMode === 'monthly' && `Tahun Buku 2026 - Periode Bulanan SAK-EMKM`}
-                    {stokViewMode === 'quarterly' && `Tahun Buku 2026 - Periode Kuartalan`}
-                    {stokViewMode === 'annual' && `Tahun Buku 2026 - Konsolidasi Akhir Tahun`}
+                    {stokViewMode === 'monthly' && `Tahun Buku ${new Date().getFullYear()} - Periode Bulanan SAK-EMKM`}
+                    {stokViewMode === 'quarterly' && `Tahun Buku ${new Date().getFullYear()} - Periode Kuartalan`}
+                    {stokViewMode === 'annual' && `Tahun Buku ${new Date().getFullYear()} - Konsolidasi Akhir Tahun`}
                   </p>
                   <p className="text-[11px] text-slate-400 font-bold italic">Sesuai Standar Akuntansi Keuangan SAK-EMKM / PSAK 14 / IAS 2 (Inventories)</p>
 
@@ -7443,1564 +6765,46 @@ export default function App() {
           })()}
 
           {/* TAB 7: LAPORAN KEUANGAN & STOK (REPORTS HUB) */}
+          {/* TAB 7: LAPORAN KEUANGAN & STOK (REPORTS HUB) */}
           {['laba_rugi', 'arus_kas', 'konsinyasi', 'penjualan_harian', 'pajak_ppn'].includes(activeTab) && (
-            <div className="space-y-6">
-              {/* Dynamic Print CSS Injector for Flawless Printing */}
-              <style dangerouslySetInnerHTML={{
-                __html: `
-                @media print {
-                  body {
-                    background: white !important;
-                    color: black !important;
-                    -webkit-print-color-adjust: exact !important;
-                    print-color-adjust: exact !important;
-                    font-family: sans-serif !important;
-                  }
-                  header, footer, nav, aside, .no-print, button, input[type="checkbox"], select, .modal, [role="dialog"], #stok-control-panel {
-                    display: none !important;
-                  }
-                  main {
-                    padding: 0 !important;
-                    margin: 0 !important;
-                    max-width: 100% !important;
-                    width: 100% !important;
-                  }
-                  .print-report-card {
-                    border: none !important;
-                    box-shadow: none !important;
-                    padding: 0 !important;
-                    margin: 0 auto !important;
-                    max-width: 100% !important;
-                    width: 100% !important;
-                    display: block !important;
-                  }
-                  /* Tables pristine alignment on paper */
-                  table {
-                    width: 100% !important;
-                    border-collapse: collapse !important;
-                  }
-                  th, td {
-                    border: 1px solid #cbd5e1 !important;
-                    color: black !important;
-                    background: transparent !important;
-                    padding: 4px 6px !important;
-                    font-size: 8px !important;
-                  }
-                  th {
-                    background-color: #f1f5f9 !important;
-                    font-weight: bold !important;
-                  }
-                  @page {
-                    size: ${activeTab === 'penjualan_harian' ? 'A3 landscape' : 'A4 portrait'};
-                    margin: 1.2cm 1cm 1.2cm 1cm;
-                  }
-                }
-              `}} />
-
-              {/* ponytail: hapus atribusi xero & gunakan judul laporan dinamis */}
-              {/* ponytail: navigasi jenis laporan dipusatkan di dropdown Top Bar utama */}
-              <div className="flex flex-col md:flex-row justify-between items-start md:items-center border-b border-border pb-4 gap-4 no-print">
-                <div>
-                  <h2 className="text-2xl font-black text-primary tracking-tight flex items-center gap-2">
-                    <span>📊 {activeTab === 'laba_rugi' ? 'LAPORAN LABA RUGI (P&L)' : activeTab === 'arus_kas' ? 'LAPORAN ARUS KAS (CASH FLOW)' : activeTab === 'konsinyasi' ? 'LAPORAN KONSINYASI RETAIL' : activeTab === 'penjualan_harian' ? 'LAPORAN PENJUALAN HARIAN' : 'LAPORAN PAJAK PPN'}</span>
-                  </h2>
-                </div>
-              </div>
-
-              {/* REPORT CONTENTS */}
-
-              {/* 1. LABA RUGI */}
-              {activeTab === 'laba_rugi' && (() => {
-                const filteredSos = salesOrders.filter(so => so.tanggal >= analitikStartDate && so.tanggal <= analitikEndDate && so.statusLogistik !== 'Void');
-
-                const totalRevenue = filteredSos.reduce((sum, so) => sum + so.subtotal, 0);
-
-                const totalHpp = filteredSos.reduce((sum, so) => {
-                  return sum + so.items.reduce((itemSum: number, item: any) => {
-                    const target = products.find(p => p.sku === item.sku);
-                    const itemHpp = target ? target.hpp : 12000;
-                    return itemSum + (item.qty * itemHpp);
-                  }, 0);
-                }, 0);
-
-                const labaKotor = totalRevenue - totalHpp;
-
-                // Dynamic Opex based on cash ledger
-                const filteredOpex = cashLedger.filter(c =>
-                  c.tanggal >= analitikStartDate &&
-                  c.tanggal <= analitikEndDate &&
-                  c.kategori !== 'Pembelian' &&
-                  c.kategori !== 'Modal' &&
-                  c.kredit > 0
-                );
-
-                const opexBreakdown = filteredOpex.reduce((acc: any, item: any) => {
-                  const cat = item.kategori || 'Operasional Lain';
-                  acc[cat] = (acc[cat] || 0) + item.kredit;
-                  return acc;
-                }, {});
-
-                const totalOpex = filteredOpex.reduce((sum, c) => sum + c.kredit, 0);
-                const labaBersih = labaKotor - totalOpex;
-
-                return (
-                  <div className="space-y-6">
-                    {/* Date Filters */}
-                    {/* ponytail: standarisasi filter periode & jangka waktu */}
-                    <div className="bg-white border border-border p-3 rounded-card shadow-xs flex flex-wrap gap-4 items-center justify-between no-print">
-                      <div className="flex items-center gap-2">
-                        <span className="w-2 h-2 bg-primary rounded-full"></span>
-                        <h4 className="text-sm font-bold uppercase text-primary tracking-wider">Filter Periode Laporan</h4>
-                      </div>
-                      <div className="flex flex-wrap items-center gap-4">
-                        <div className="flex items-center gap-2">
-                          <span className="text-xs font-bold text-secondary uppercase">Periode:</span>
-                          <select className="text-sm font-medium text-primary p-1.5 border border-border rounded bg-slate-50 outline-none">
-                            <option value="daily">Harian</option>
-                            <option value="weekly">Mingguan</option>
-                            <option value="monthly" defaultValue="monthly">Bulanan</option>
-                            <option value="annual">Tahunan</option>
-                          </select>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <span className="text-xs font-bold text-secondary uppercase">Waktu:</span>
-                          <div className="flex items-center gap-1 border border-border rounded px-2 py-1 bg-slate-50">
-                            <input type="date" value={analitikStartDate} onChange={(e) => setAnalitikStartDate(e.target.value)} className="text-sm font-medium text-primary outline-none bg-transparent" />
-                            <span className="text-xs font-bold text-slate-400">s/d</span>
-                            <input type="date" value={analitikEndDate} onChange={(e) => setAnalitikEndDate(e.target.value)} className="text-sm font-medium text-primary outline-none bg-transparent" />
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                    {/* Profit and Loss Statement */}
-                    <div id="laba-rugi-print-section" className="bg-white border border-border rounded-card shadow-xs p-8 max-w-3xl mx-auto space-y-6 print-report-card">
-                      <div className="text-center space-y-1">
-                        <h3 className="text-lg font-black text-primary print:text-black tracking-wide uppercase">LAPORAN LABA RUGI</h3>
-                        <p className="text-sm text-primary print:text-black font-black tracking-widest">CV. SOURDOUGH ABADI &bull; SAK-EMKM</p>
-                        <p className="text-[11px] text-secondary print:text-black font-mono">Periode: {analitikStartDate} s/d {analitikEndDate} (IDR)</p>
-                      </div>
-                      <div className="space-y-4 text-sm font-semibold">
-                        {/* Revenue */}
-                        <div className="flex justify-between text-sm font-extrabold border-b print:border-black pb-1.5 text-primary print:text-black">
-                          <span>1. PENDAPATAN OPERASIONAL</span>
-                          <span className="font-mono">Rp {totalRevenue.toLocaleString('id-ID')}</span>
-                        </div>
-                        <div className="space-y-1 pl-4 pr-4 text-secondary text-[11px]">
-                          <div className="flex justify-between">
-                            <span>Penjualan Barang Jadi Retail &amp; Grosir</span>
-                            <span className="font-mono">Rp {totalRevenue.toLocaleString('id-ID')}</span>
-
-                          </div>
-                        </div>
-                        {/* HPP */}
-                        <div className="flex justify-between text-sm font-extrabold border-b print:border-black pb-1.5 text-primary print:text-black">
-                          <span>2. BEBAN POKOK PENJUALAN (HPP)</span>
-                          <span className="font-mono text-danger print:text-black">-Rp {totalHpp.toLocaleString('id-ID')}</span>
-                        </div>
-                        <div className="space-y-1 pl-4 pr-4 text-secondary text-[11px]">
-                          <div className="flex justify-between">
-                            <span>Beban Pokok Penjualan (HPP Standard Average)</span>
-                            <span className="font-mono">-Rp {totalHpp.toLocaleString('id-ID')}</span>
-
-                          </div>
-                        </div>
-                        {/* Gross Profit */}
-                        <div data-report-box="laba-kotor" className="flex justify-between text-sm font-extrabold text-success bg-success/10 p-2.5 rounded border border-success/30 border-opacity-35 print:bg-[#f5f5f5] print:border-black print:text-black print:border-opacity-100 print:border-solid">
-                          <span>LABA KOTOR OPERASIONAL</span>
-                          <span className="font-mono">Rp {labaKotor.toLocaleString('id-ID')}</span>
-
-                        </div>
-                        {/* OPEX */}
-                        <div className="flex justify-between text-sm font-extrabold border-b print:border-black pb-1.5 text-primary print:text-black">
-                          <span>3. BEBAN OPERASIONAL (OPEX)</span>
-                          <span className="font-mono text-danger print:text-black">-Rp {totalOpex.toLocaleString('id-ID')}</span>
-                        </div>
-                        <div className="space-y-1.5 pl-4 pr-4 text-secondary text-[11px]">
-                          {Object.keys(opexBreakdown).length === 0 ? (
-                            <div className="text-slate-400 italic">Tidak ada pengeluaran operasional tercatat pada periode ini.</div>
-                          ) : (
-                            Object.entries(opexBreakdown).map(([cat, val]: any) => (
-                              <div key={cat} className="flex justify-between capitalize">
-                                <span>Beban {cat}</span>
-                                <span className="font-mono">-Rp {val.toLocaleString('id-ID')}</span>
-                              </div>
-                            ))
-                          )}
-
-                        </div>
-                        {/* Net Profit */}
-                        <div data-report-box="laba-bersih" className={`flex justify-between text-base print:text-lg font-black p-4 rounded-card border ${labaBersih >= 0 ? 'bg-success/10 text-success border-success/30' : 'bg-danger/10 text-danger border-danger/30'} print:bg-[#f5f5f5] print:border-black print:border-2 print:border-opacity-100 print:text-black print:border-solid`}>
-                          <span>LABA BERSIH (NET INCOME)</span>
-                          <span className="font-mono">
-                            {labaBersih < 0 ? '-' : ''}Rp {Math.abs(labaBersih).toLocaleString('id-ID')}
-                          </span>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                );
-              })()}
-
-              {/* 2. ARUS KAS */}
-              {activeTab === 'arus_kas' && (() => {
-                // Determine accounts to show
-                const filteredLedger = arusKasFilterAkun === 'Semua Akun'
-                  ? cashLedger
-                  : cashLedger.filter(c => (c.akun || 'Bank') === arusKasFilterAkun);
-
-                // Cash Ledger filters
-                const periodCashTransactions = filteredLedger.filter(c => c.tanggal >= analitikStartDate && c.tanggal <= analitikEndDate);
-
-                // Operating Inflows (Penjualan / Client settlement)
-                const cashInSales = periodCashTransactions
-                  .filter(c => c.kategori === 'Penjualan')
-                  .reduce((sum, c) => sum + c.debit, 0);
-
-                // Operating Outflows (PO Pembelian / Suppliers)
-                const cashOutSupplier = periodCashTransactions
-                  .filter(c => c.kategori === 'Pembelian')
-                  .reduce((sum, c) => sum + c.kredit, 0);
-
-                // Operating Outflows (Opex - rent, util, salary)
-                const cashOutOpex = periodCashTransactions
-                  .filter(c => ['Sewa', 'Utilitas', 'Gaji', 'Operasional Lain'].includes(c.kategori))
-                  .reduce((sum, c) => sum + c.kredit, 0);
-
-                // Financing Inflows (Setoran modal)
-                const cashInModal = periodCashTransactions
-                  .filter(c => c.kategori === 'Modal')
-                  .reduce((sum, c) => sum + c.debit, 0);
-
-                // Net Cash Change
-                const cashInFlow = cashInSales + cashInModal;
-                const cashOutFlow = cashOutSupplier + cashOutOpex;
-                const netCashChange = cashInFlow - cashOutFlow;
-
-                // Find beginning cash balance
-                const beforeTxList = filteredLedger.filter(c => c.tanggal < analitikStartDate);
-
-                let beginningCash = 0;
-                if (arusKasFilterAkun === 'Semua Akun') {
-                  const latestBalances: Record<string, number> = {};
-                  beforeTxList.forEach(c => {
-                    latestBalances[c.akun || 'Bank'] = c.saldo;
-                  });
-                  beginningCash = Object.values(latestBalances).reduce((sum, val) => sum + val, 0);
-                  if (Object.keys(latestBalances).length === 0) {
-                    beginningCash = 0;
-                  }
-                } else {
-                  beginningCash = beforeTxList.length > 0 ? beforeTxList[beforeTxList.length - 1].saldo : 0;
-                }
-                const endingCash = beginningCash + netCashChange;
-
-                return (
-                  <div className="space-y-6">
-                    {/* Date Filters */}
-                    {/* ponytail: standarisasi filter periode & jangka waktu */}
-                    <div className="bg-white border border-border p-3 rounded-card shadow-xs flex flex-wrap gap-4 items-center justify-between no-print">
-                      <div className="flex items-center gap-2">
-                        <span className="w-2 h-2 bg-primary rounded-full"></span>
-                        <h4 className="text-sm font-bold uppercase text-primary tracking-wider">Filter Periode Laporan</h4>
-                      </div>
-                      <div className="flex flex-wrap items-center gap-4">
-                        <div className="flex items-center gap-2">
-                          <span className="text-xs font-bold text-secondary uppercase">Periode:</span>
-                          <select className="text-sm font-medium text-primary p-1.5 border border-border rounded bg-slate-50 outline-none">
-                            <option value="daily">Harian</option>
-                            <option value="weekly">Mingguan</option>
-                            <option value="monthly" defaultValue="monthly">Bulanan</option>
-                            <option value="annual">Tahunan</option>
-                          </select>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <span className="text-xs font-bold text-secondary uppercase">Waktu:</span>
-                          <div className="flex items-center gap-1 border border-border rounded px-2 py-1 bg-slate-50">
-                            <input type="date" value={analitikStartDate} onChange={(e) => setAnalitikStartDate(e.target.value)} className="text-sm font-medium text-primary outline-none bg-transparent" />
-                            <span className="text-xs font-bold text-slate-400">s/d</span>
-                            <input type="date" value={analitikEndDate} onChange={(e) => setAnalitikEndDate(e.target.value)} className="text-sm font-medium text-primary outline-none bg-transparent" />
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Summary Cards */}
-                    {(() => {
-                      const currentBalances: Record<string, number> = {};
-                      settingCashAccounts.forEach(acc => currentBalances[acc.nama] = 0);
-                      cashLedger.forEach(c => {
-                        currentBalances[c.akun || 'Bank'] = c.saldo;
-                      });
-                      const totalCurrentCash = Object.values(currentBalances).reduce((sum, val) => sum + val, 0);
-
-                      return (
-                        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 no-print">
-                          <div
-                            onClick={() => setArusKasFilterAkun('Semua Akun')}
-                            className={`p-4 rounded-card flex flex-col justify-center items-center text-center cursor-pointer transition-all shadow-sm ${arusKasFilterAkun === 'Semua Akun' ? 'bg-primary/10 border-2 border-primary' : 'bg-white border border-border hover:border-primary/50'}`}
-                          >
-                            <span className="text-xs font-bold text-primary uppercase mb-1">Total Saldo (Semua)</span>
-                            <span className="text-lg font-black text-primary font-mono">Rp {totalCurrentCash.toLocaleString('id-ID')}</span>
-                          </div>
-                          {settingCashAccounts.map(acc => {
-                            const bal = currentBalances[acc.nama] || 0;
-                            return (
-                              <div
-                                key={acc.nama}
-                                onClick={() => setArusKasFilterAkun(acc.nama)}
-                                className={`p-4 rounded-card flex flex-col justify-center items-center text-center cursor-pointer transition-all shadow-sm ${arusKasFilterAkun === acc.nama ? 'bg-primary/10 border-2 border-primary' : 'bg-white border border-border hover:border-primary/50'}`}
-                              >
-                                <span className="text-xs font-bold text-secondary uppercase mb-1" title={acc.nama}>
-                                  {acc.nomor ? `${acc.nomor} - ` : ''}{acc.nama}
-                                </span>
-                                <span className="text-lg font-black text-slate-700 font-mono">Rp {bal.toLocaleString('id-ID')}</span>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      );
-                    })()}
-
-                    <div className="bg-white border border-border rounded-card shadow-xs p-4 flex justify-between items-center no-print">
-                      <div className="flex items-center gap-3">
-                        <span className="text-sm font-bold text-secondary uppercase">Filter Akun:</span>
-                        <select
-                          value={arusKasFilterAkun}
-                          onChange={(e) => setArusKasFilterAkun(e.target.value)}
-                          className="border border-border rounded px-3 py-1.5 text-sm font-bold text-primary focus:outline-none focus:ring-1 focus:ring-primary bg-slate-50"
-                        >
-                          <option value="Semua Akun">Semua Akun (Gabungan)</option>
-                          {settingCashAccounts.map(acc => (
-                            <option key={acc.nama} value={acc.nama}>{acc.nomor ? `${acc.nomor} - ${acc.nama}` : acc.nama}</option>
-                          ))}
-                        </select>
-                      </div>
-                    </div>
-
-                    {/* ponytail: komparasi 2 kolom (current vs prior period) pada Laporan Arus Kas */}
-                    <div className="bg-white border border-border rounded-card shadow-xs overflow-hidden print-report-card">
-                      <div className="text-center space-y-1 p-6 border-b border-border print:border-black print:bg-white bg-slate-50 relative">
-                        <h3 className="text-xl font-black text-primary print:text-black tracking-wide uppercase">LAPORAN ARUS KAS (CASH FLOW)</h3>
-                        <p className="text-sm text-primary print:text-black font-bold tracking-widest">METODE LANGSUNG (DIRECT METHOD) — DENGAN KOMPARASI</p>
-                        <button
-                          onClick={() => {
-                            setManualCashForm({
-                              tanggal: new Date().toISOString().split('T')[0],
-                              keterangan: '',
-                              kategori: 'Operasional Lain',
-                              tipe: 'KELUAR',
-                              nominal: 0,
-                              akun: settingCashAccounts.length > 0 ? settingCashAccounts[0].nama : 'Bank'
-                            });
-                            setShowManualCashModal(true);
-                          }}
-                          className="absolute right-6 top-1/2 -translate-y-1/2 bg-primary hover:bg-primary-hover text-white px-4 py-2.5 rounded-card flex items-center gap-2 font-bold text-sm shadow transition-all cursor-pointer no-print"
-                        >
-                          <Plus size={16} />
-                          <span>Catat Transaksi</span>
-                        </button>
-                      </div>
-
-                      <div className="overflow-x-auto">
-                        <table className="w-full text-left text-sm border-collapse">
-                          <thead>
-                            <tr className="bg-slate-100 print:bg-white text-primary print:text-black uppercase tracking-widest text-[11px] font-black border-b border-border print:border-black divide-x divide-slate-200 print:divide-black">
-                              <th className="p-3 w-1/2">Keterangan</th>
-                              <th className="p-3 text-right w-1/4">Periode Berjalan<br /><span className="text-[9px] font-mono font-normal text-secondary print:text-black">{analitikStartDate} s/d {analitikEndDate}</span></th>
-                              <th className="p-3 text-right w-1/4">Periode Sebelumnya<br /><span className="text-[9px] font-mono font-normal text-secondary print:text-black">(Prior Period - Dummy)</span></th>
-                            </tr>
-                          </thead>
-                          <tbody className="divide-y divide-slate-100 print:divide-black font-semibold text-secondary print:text-black">
-                            {/* OPERATIONAL FLOWS */}
-                            <tr className="bg-slate-50/50 print:bg-white">
-                              <td colSpan={3} className="p-3 text-sm font-black text-primary print:text-black tracking-wider uppercase">1. Arus Kas dari Aktivitas Operasional</td>
-                            </tr>
-                            <tr className="hover:bg-slate-50 print:bg-white divide-x divide-slate-100 print:divide-black">
-                              <td className="p-3 text-[12px] pl-6 print:text-black">Penerimaan Kas dari Pelanggan (SO Lunas)</td>
-                              <td className="p-3 text-right font-mono text-success print:text-black">+Rp {cashInSales.toLocaleString('id-ID')}</td>
-                              <td className="p-3 text-right font-mono text-slate-400 print:text-black">+Rp {(cashInSales * 0.85).toLocaleString('id-ID')}</td>
-                            </tr>
-                            <tr className="hover:bg-slate-50 print:bg-white divide-x divide-slate-100 print:divide-black">
-                              <td className="p-3 text-[12px] pl-6 print:text-black">Pembayaran Kas kepada Pemasok (PO Bahan Baku)</td>
-                              <td className="p-3 text-right font-mono text-danger print:text-black">-Rp {cashOutSupplier.toLocaleString('id-ID')}</td>
-                              <td className="p-3 text-right font-mono text-slate-400 print:text-black">-Rp {(cashOutSupplier * 0.9).toLocaleString('id-ID')}</td>
-                            </tr>
-                            <tr className="hover:bg-slate-50 print:bg-white divide-x divide-slate-100 print:divide-black">
-                              <td className="p-3 text-[12px] pl-6 print:text-black">Pembayaran Kas untuk Beban Operasional &amp; Gaji</td>
-                              <td className="p-3 text-right font-mono text-danger print:text-black">-Rp {cashOutOpex.toLocaleString('id-ID')}</td>
-                              <td className="p-3 text-right font-mono text-slate-400 print:text-black">-Rp {(cashOutOpex * 0.95).toLocaleString('id-ID')}</td>
-                            </tr>
-                            <tr className="bg-slate-50 print:bg-[#f5f5f5] divide-x divide-slate-100 print:divide-black border-t-2 border-border print:border-black print:border-solid">
-                              <td className="p-3 text-sm font-black text-primary print:text-black pl-6">Arus Kas Bersih dari Aktivitas Operasional</td>
-                              <td className="p-3 text-right font-mono font-bold text-primary print:text-black">Rp {(cashInSales - cashOutSupplier - cashOutOpex).toLocaleString('id-ID')}</td>
-                              <td className="p-3 text-right font-mono font-bold text-slate-500 print:text-black">Rp {((cashInSales * 0.85) - (cashOutSupplier * 0.9) - (cashOutOpex * 0.95)).toLocaleString('id-ID')}</td>
-                            </tr>
-
-                            {/* FINANCING FLOWS */}
-                            <tr className="bg-slate-50/50 print:bg-white">
-                              <td colSpan={3} className="p-3 text-sm font-black text-primary print:text-black tracking-wider uppercase mt-4">2. Arus Kas dari Aktivitas Pendanaan</td>
-                            </tr>
-                            <tr className="hover:bg-slate-50 print:bg-white divide-x divide-slate-100 print:divide-black">
-                              <td className="p-3 text-[12px] pl-6 print:text-black">Setoran Modal Pemilik / Investor</td>
-                              <td className="p-3 text-right font-mono text-success print:text-black">+Rp {cashInModal.toLocaleString('id-ID')}</td>
-                              <td className="p-3 text-right font-mono text-slate-400 print:text-black">+Rp 0</td>
-                            </tr>
-                            <tr className="bg-slate-50 print:bg-[#f5f5f5] divide-x divide-slate-100 print:divide-black border-t-2 border-border print:border-black print:border-solid">
-                              <td className="p-3 text-sm font-black text-primary print:text-black pl-6">Arus Kas Bersih dari Aktivitas Pendanaan</td>
-                              <td className="p-3 text-right font-mono font-bold text-primary print:text-black">Rp {cashInModal.toLocaleString('id-ID')}</td>
-                              <td className="p-3 text-right font-mono font-bold text-slate-500 print:text-black">Rp 0</td>
-                            </tr>
-
-                            {/* NET CALCULATION */}
-                            <tr className="divide-x divide-slate-100 print:divide-black border-t-[3px] border-border print:border-black print:border-solid mt-4 bg-slate-100/50 print:bg-[#f5f5f5]">
-                              <td className="p-4 text-sm font-black text-primary print:text-black">Kenaikan / (Penurunan) Kas Bersih Periode Ini</td>
-                              <td className={`p-4 text-right font-mono font-bold ${netCashChange >= 0 ? 'text-success print:text-black' : 'text-danger print:text-black'}`}>
-                                {netCashChange >= 0 ? '+' : ''}Rp {netCashChange.toLocaleString('id-ID')}
-                              </td>
-                              <td className={`p-4 text-right font-mono font-bold text-slate-500 print:text-black`}>
-                                {((cashInSales * 0.85) - (cashOutSupplier * 0.9) - (cashOutOpex * 0.95)) >= 0 ? '+' : ''}Rp {((cashInSales * 0.85) - (cashOutSupplier * 0.9) - (cashOutOpex * 0.95)).toLocaleString('id-ID')}
-                              </td>
-                            </tr>
-                            <tr className="divide-x divide-slate-100 print:divide-black bg-slate-100/50 print:bg-white">
-                              <td className="p-4 text-[12px] text-secondary print:text-black">Saldo Awal Kas</td>
-                              <td className="p-4 text-right font-mono text-secondary print:text-black">Rp {beginningCash.toLocaleString('id-ID')}</td>
-                              <td className="p-4 text-right font-mono text-slate-400 print:text-black">Rp {(beginningCash - ((cashInSales * 0.85) - (cashOutSupplier * 0.9) - (cashOutOpex * 0.95))).toLocaleString('id-ID')}</td>
-                            </tr>
-                            <tr className="divide-x divide-slate-200 print:divide-black bg-slate-200/50 print:bg-[#f5f5f5] border-t-2 border-border print:border-black print:border-2 print:border-solid">
-                              <td className="p-4 text-sm font-black text-primary print:text-black">SALDO AKHIR KAS</td>
-                              <td className="p-4 text-right font-mono font-black text-primary print:text-black text-base">Rp {endingCash.toLocaleString('id-ID')}</td>
-                              <td className="p-4 text-right font-mono font-black text-slate-600 print:text-black text-base">Rp {beginningCash.toLocaleString('id-ID')}</td>
-                            </tr>
-                          </tbody>
-                        </table>
-                      </div>
-                    </div>
-                  </div>
-                );
-              })()}
-              {/* 3. LAPORAN KONSINYASI RETAIL */}
-              {activeTab === 'konsinyasi' && (() => {
-                // Calculate metrics
-                const totalBatches = consignments.length;
-                const totalSoldQty = consignments.reduce((sum, c) => sum + c.qtySold, 0);
-                const totalGrossSales = consignments.reduce((sum, c) => sum + (c.qtySold * c.harga), 0);
-                const totalCommissionEarned = consignments.reduce((sum, c) => sum + (c.qtySold * c.harga * (c.komisiPct / 100)), 0);
-                const totalPayableToConsignor = totalGrossSales - totalCommissionEarned;
-
-                // Handle submit for adding consignment
-                const handleAddConsignment = (e: React.FormEvent) => {
-                  e.preventDefault();
-                  if (!consignmentForm.consignor || !consignmentForm.sku || !consignmentForm.nama) {
-                    triggerToast('Semua kolom wajib diisi!', 'error');
-                    return;
-                  }
-
-                  const newConsignment = {
-                    id: `CSG-202606${String(Math.floor(Math.random() * 90) + 10)}-00${consignments.length + 1}`,
-                    tanggal: new Date().toISOString().split('T')[0],
-                    consignor: consignmentForm.consignor,
-                    sku: consignmentForm.sku,
-                    nama: consignmentForm.nama,
-                    qtyReceived: consignmentForm.qtyReceived,
-                    qtySold: 0,
-                    qtyReturned: 0,
-                    harga: consignmentForm.harga,
-                    komisiPct: consignmentForm.komisiPct,
-                    status: 'Aktif',
-                    catatan: consignmentForm.catatan || 'Konsinyasi baru'
-                  };
-
-                  setConsignments([newConsignment, ...consignments]);
-                  setShowAddConsignmentModal(false);
-                  setConsignmentForm({ consignor: '', sku: '', nama: '', qtyReceived: 10, harga: 10000, komisiPct: 20, catatan: '' });
-                  triggerToast('Berhasil menambahkan penerimaan titipan konsinyasi!');
-                };
-
-                // Handle record consignment sales
-                const handleSellConsignment = (e: React.FormEvent) => {
-                  e.preventDefault();
-                  const batch = consignments.find(c => c.id === consignmentSellForm.id);
-                  if (!batch) {
-                    triggerToast('Pilih batch konsinyasi terlebih dahulu!', 'error');
-                    return;
-                  }
-
-                  const maxAvailable = batch.qtyReceived - batch.qtySold - batch.qtyReturned;
-                  if (consignmentSellForm.qtySold > maxAvailable) {
-                    triggerToast(`Kuantitas melebihi stok yang tersedia (${maxAvailable} pcs)!`, 'error');
-                    return;
-                  }
-
-                  const updatedConsignments = consignments.map(c => {
-                    if (c.id === batch.id) {
-                      const newSold = c.qtySold + consignmentSellForm.qtySold;
-                      const newStatus = (newSold + c.qtyReturned) >= c.qtyReceived ? 'Selesai' : 'Aktif';
-                      return { ...c, qtySold: newSold, status: newStatus };
-                    }
-                    return c;
-                  });
-
-                  setConsignments(updatedConsignments);
-                  setShowSellConsignmentModal(false);
-                  triggerToast(`Berhasil mencatat penjualan ${consignmentSellForm.qtySold} pcs barang konsinyasi!`);
-                };
-
-                // Handle settle pay consignor
-                const handleSettlePayout = (id: string) => {
-                  const batch = consignments.find(c => c.id === id);
-                  if (!batch) return;
-
-                  const outstandingSold = batch.qtySold;
-                  const grossVal = outstandingSold * batch.harga;
-                  const comm = grossVal * (batch.komisiPct / 100);
-                  const payoutAmount = grossVal - comm;
-
-                  if (payoutAmount <= 0) {
-                    triggerToast('Tidak ada dana yang perlu diselesaikan!', 'warning');
-                    return;
-                  }
-
-                  // Add opex payment transaction to cash ledger
-                  const targetAkun = 'Bank';
-                  const accountTx = cashLedger.filter(c => (c.akun || 'Bank') === targetAkun);
-                  const lastBal = accountTx.length > 0 ? accountTx[accountTx.length - 1].saldo : 0;
-                  const newCashLog = {
-                    id: `CSH-202606${String(Math.floor(Math.random() * 90) + 10)}-00${cashLedger.length + 1}`,
-                    tanggal: new Date().toISOString().split('T')[0],
-                    ref: batch.id,
-                    keterangan: `Pelunasan Konsinyasi [${batch.id}] kepada ${batch.consignor}`,
-                    kategori: 'Operasional Lain',
-                    debit: 0,
-                    kredit: payoutAmount,
-                    saldo: lastBal - payoutAmount,
-                    akun: targetAkun
-                  };
-
-                  // Update batch to Selesai
-                  const updatedConsignments = consignments.map(c => {
-                    if (c.id === id) {
-                      return { ...c, status: 'Selesai', catatan: `${c.catatan || ''} (Paid & Settled)` };
-                    }
-                    return c;
-                  });
-
-                  setCashLedger([...cashLedger, newCashLog]);
-                  saveCashEntry(newCashLog);
-                  setConsignments(updatedConsignments);
-                  triggerToast(`Berhasil mencatat payout Rp ${payoutAmount.toLocaleString('id-ID')} ke kas!`);
-                };
-
-                return (
-                  <div className="space-y-6">
-                    {/* ponytail: standarisasi filter periode & jangka waktu */}
-                    <div className="bg-white border border-border p-3 rounded-card shadow-xs flex flex-wrap gap-4 items-center justify-between no-print">
-                      <div className="flex items-center gap-2">
-                        <span className="w-2 h-2 bg-primary rounded-full"></span>
-                        <h4 className="text-sm font-bold uppercase text-primary tracking-wider">Filter Periode Laporan</h4>
-                      </div>
-                      <div className="flex flex-wrap items-center gap-4">
-                        <div className="flex items-center gap-2">
-                          <span className="text-xs font-bold text-secondary uppercase">Periode:</span>
-                          <select defaultValue="monthly" className="text-sm font-medium text-primary p-1.5 border border-border rounded bg-slate-50 outline-none">
-                            <option value="daily">Harian</option>
-                            <option value="weekly">Mingguan</option>
-                            <option value="monthly">Bulanan</option>
-                            <option value="annual">Tahunan</option>
-                          </select>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <span className="text-xs font-bold text-secondary uppercase">Waktu:</span>
-                          <div className="flex items-center gap-1 border border-border rounded px-2 py-1 bg-slate-50">
-                            <input type="date" value={analitikStartDate} onChange={(e) => setAnalitikStartDate(e.target.value)} className="text-sm font-medium text-primary outline-none bg-transparent" />
-                            <span className="text-xs font-bold text-slate-400">s/d</span>
-                            <input type="date" value={analitikEndDate} onChange={(e) => setAnalitikEndDate(e.target.value)} className="text-sm font-medium text-primary outline-none bg-transparent" />
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                    {/* Consignment Metrics */}
-                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-                      <div className="bg-text-primary text-white p-4 rounded-card border border-slate-800 shadow-sm">
-                        <div className="text-[11px] font-black text-slate-400 uppercase tracking-wider">Total Kontrak Titipan</div>
-                        <div className="text-xl font-extrabold mt-1 font-mono">{totalBatches} Batch</div>
-
-                      </div>
-                      <div className="bg-white p-4 rounded-card border border-border shadow-sm">
-                        <div className="text-[11px] font-black text-slate-400 uppercase tracking-wider">Kuantitas Terjual</div>
-                        <div className="text-xl font-extrabold mt-1 text-primary font-mono">{totalSoldQty} Pcs</div>
-
-                      </div>
-                      <div className="bg-white p-4 rounded-card border border-primary border-opacity-35 shadow-sm">
-                        <div className="text-[11px] font-black text-primary uppercase tracking-wider">Komisi Toko Kita ({consignments[0]?.komisiPct || 20}%)</div>
-                        <div className="text-xl font-extrabold mt-1 text-success font-mono">Rp {totalCommissionEarned.toLocaleString('id-ID')}</div>
-
-                      </div>
-                      <div className="bg-white p-4 rounded-card border border-danger/30 shadow-sm">
-                        <div className="text-[11px] font-black text-danger uppercase tracking-wider">Hutang ke Consignor (Owner)</div>
-                        <div className="text-xl font-extrabold mt-1 text-danger font-mono">Rp {totalPayableToConsignor.toLocaleString('id-ID')}</div>
-
-                      </div>
-                    </div>
-                    {/* Consignment Action Row */}
-                    <div className="flex justify-between items-center bg-white p-4 rounded-card border border-border shadow-xs">
-                      <div className="text-sm text-secondary font-semibold">Gunakan modul ini untuk melacak titipan barang retail (Consign-In).</div>
-                      <div className="flex gap-2">
-                        <button
-                          onClick={() => setShowSellConsignmentModal(true)}
-                          className="bg-warning/100 hover:bg-warning text-white px-3 py-1.5 rounded-card text-sm font-bold shadow-sm transition-all flex items-center gap-1.5"
-                        >
-                          <TrendingUp size={13} />
-                          <span>Catat Penjualan Titipan</span>
-                        </button>
-                        <button
-                          onClick={() => setShowAddConsignmentModal(true)}
-                          className="bg-primary hover:bg-success text-white px-3 py-1.5 rounded-card text-sm font-bold shadow-sm transition-all flex items-center gap-1.5"
-                        >
-                          <Plus size={13} />
-                          <span>Terima Barang Baru</span>
-                        </button>
-
-                      </div>
-                    </div>
-                    {/* Consignment Table */}
-                    <div className="bg-white border border-border rounded-card shadow-xs overflow-hidden">
-                      <div className="p-4 bg-slate-50 border-b border-border flex justify-between items-center">
-                        <h4 className="text-sm font-extrabold text-primary uppercase tracking-wider">Daftar Barang Titipan Konsinyasi (Consignment-In)</h4>
-                        <span className="text-[11px] font-mono text-slate-400">Total {consignments.length} records</span>
-
-                      </div>
-                      <div className="overflow-x-auto">
-                        <table className="w-full text-left text-sm">
-                          <thead className="bg-slate-100 text-secondary border-b border-border font-extrabold uppercase tracking-widest text-[11px]">
-                            <tr>
-                              <th className="p-3">Ref ID / Tanggal</th>
-                              <th className="p-3">Consignor</th>
-                              <th className="p-3">Barang (SKU)</th>
-                              <th className="p-3 text-center">Stok (Titip/Jual/Sisa)</th>
-                              <th className="p-3 text-right">Harga Unit</th>
-                              <th className="p-3 text-center">Komisi (%)</th>
-                              <th className="p-3 text-right">Penjualan Kotor</th>
-                              <th className="p-3 text-right">Hutang Consignor</th>
-                              <th className="p-3 text-center">Status</th>
-                              <th className="p-3 text-center w-28">Aksi</th>
-                            </tr>
-                          </thead>
-                          <tbody className="divide-y divide-slate-100 font-semibold text-primary">
-                            {consignments.map((c: any) => {
-                              const remaining = c.qtyReceived - c.qtySold - c.qtyReturned;
-                              const grossSales = c.qtySold * c.harga;
-                              const ourCommission = grossSales * (c.komisiPct / 100);
-                              const payable = grossSales - ourCommission;
-
-                              return (
-                                <tr key={c.id} className="hover:bg-slate-50">
-                                  <td className="p-3">
-                                    <div className="font-mono text-[11px] font-black text-primary">{c.id}</div>
-                                    <div className="text-[11px] text-slate-400 mt-0.5">{c.tanggal}</div>
-                                  </td>
-                                  <td className="p-3 text-primary font-bold">{c.consignor}</td>
-                                  <td className="p-3">
-                                    <div className="font-bold text-primary">{c.nama}</div>
-                                    <div className="font-mono text-[11px] text-slate-400">{c.sku}</div>
-                                  </td>
-                                  <td className="p-3 text-center">
-                                    <div className="font-mono">
-                                      <span className="text-primary font-bold">{c.qtyReceived}</span>
-                                      <span className="text-slate-400"> / </span>
-                                      <span className="text-success font-bold">{c.qtySold}</span>
-                                      <span className="text-slate-400"> / </span>
-                                      <span className="text-warning font-bold">{remaining}</span>
-                                    </div>
-                                  </td>
-                                  <td className="p-3 text-right font-mono">Rp {c.harga.toLocaleString('id-ID')}</td>
-                                  <td className="p-3 text-center text-primary font-black">{c.komisiPct}%</td>
-                                  <td className="p-3 text-right font-mono">Rp {grossSales.toLocaleString('id-ID')}</td>
-                                  <td className="p-3 text-right font-mono text-danger">Rp {payable.toLocaleString('id-ID')}</td>
-                                  <td className="p-3 text-center">
-                                    <Badge variant={c.status === 'Aktif' ? 'success' : 'neutral'}>
-                                      {c.status}
-                                    </Badge>
-                                  </td>
-                                  <td className="p-3 text-center">
-                                    {c.status === 'Aktif' && payable > 0 ? (
-                                      <button
-                                        onClick={() => handleSettlePayout(c.id)}
-                                        className="bg-danger/10 hover:bg-danger/20 text-danger border border-danger/30 px-2 py-1 rounded text-[11px] font-extrabold transition-all"
-                                      >
-                                        Settle &amp; Bayar
-                                      </button>
-                                    ) : (
-                                      <span className="text-slate-400 text-[11px] italic">No Action / Settled</span>
-                                    )}
-                                  </td>
-                                </tr>
-                              );
-                            })}
-                          </tbody>
-                        </table>
-
-                      </div>
-                    </div>
-                    {/* MODAL 1: ADD CONSIGNMENT */}
-                    {showAddConsignmentModal && (
-                      <div className="fixed inset-0 z-[100] bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto">
-                        <form onSubmit={handleAddConsignment} className="bg-white rounded-card shadow-xl border border-border w-full max-w-md overflow-hidden animate-fade-in relative my-auto">
-                          <div className="bg-slate-50 border-b border-border text-primary p-4 flex justify-between items-center">
-                            <h4 className="font-extrabold text-sm uppercase tracking-wider text-primary">Terima Barang Titipan Baru</h4>
-                            <button type="button" onClick={() => setShowAddConsignmentModal(false)} className="text-slate-400 hover:text-primary cursor-pointer"><X size={16} /></button>
-                          </div>
-                          <div className="p-5 space-y-3 text-sm">
-                            <div className="space-y-1">
-                              <label className="font-bold text-secondary uppercase text-xs">Nama Consignor (Supplier Titipan)</label>
-                              <input
-                                type="text"
-                                value={consignmentForm.consignor}
-                                onChange={(e) => setConsignmentForm({ ...consignmentForm, consignor: e.target.value })}
-                                placeholder="Contoh: CV. Bakery Supplier"
-                                className="w-full p-2 border rounded border-border font-semibold"
-                                required
-                              />
-                            </div>
-                            <div className="grid grid-cols-2 gap-3">
-                              <div className="space-y-1">
-                                <label className="font-bold text-secondary uppercase text-xs">SKU Barang Titipan</label>
-                                <input
-                                  type="text"
-                                  value={consignmentForm.sku}
-                                  onChange={(e) => setConsignmentForm({ ...consignmentForm, sku: e.target.value })}
-                                  placeholder="CON-0003"
-                                  className="w-full p-2 border rounded border-border font-mono font-bold uppercase"
-                                  required
-                                />
-                              </div>
-                              <div className="space-y-1">
-                                <label className="font-bold text-secondary uppercase text-xs">Nama Barang</label>
-                                <input
-                                  type="text"
-                                  value={consignmentForm.nama}
-                                  onChange={(e) => setConsignmentForm({ ...consignmentForm, nama: e.target.value })}
-                                  placeholder="Roti Sobek Coklat"
-                                  className="w-full p-2 border rounded border-border font-semibold"
-                                  required
-                                />
-                              </div>
-                            </div>
-                            <div className="grid grid-cols-3 gap-2">
-                              <div className="space-y-1">
-                                <label className="font-bold text-secondary uppercase text-xs">Qty Dititipkan</label>
-                                <input
-                                  type="text" inputMode="numeric"
-                                  value={consignmentForm.qtyReceived}
-                                  onChange={(e) => setConsignmentForm({ ...consignmentForm, qtyReceived: parseInt(e.target.value) || 0 })}
-                                  className="w-full p-2 border rounded border-border font-bold text-right"
-                                  required
-                                />
-                              </div>
-                              <div className="space-y-1">
-                                <label className="font-bold text-secondary uppercase text-xs">Harga Jual Unit</label>
-                                <input
-                                  type="text" inputMode="numeric"
-                                  value={consignmentForm.harga}
-                                  onChange={(e) => setConsignmentForm({ ...consignmentForm, harga: parseInt(e.target.value) || 0 })}
-                                  className="w-full p-2 border rounded border-border font-bold text-right"
-                                  required
-                                />
-                              </div>
-                              <div className="space-y-1">
-                                <label className="font-bold text-secondary uppercase text-xs">Komisi Toko %</label>
-                                <input
-                                  type="text" inputMode="numeric"
-                                  value={consignmentForm.komisiPct}
-                                  onChange={(e) => setConsignmentForm({ ...consignmentForm, komisiPct: parseInt(e.target.value) || 0 })}
-                                  className="w-full p-2 border rounded border-border font-bold text-right text-primary"
-                                  required
-                                />
-                              </div>
-                            </div>
-                            <div className="space-y-1">
-                              <label className="font-bold text-secondary uppercase text-xs">Catatan / Syarat</label>
-                              <textarea
-                                value={consignmentForm.catatan}
-                                onChange={(e) => setConsignmentForm({ ...consignmentForm, catatan: e.target.value })}
-                                placeholder="Syarat titipan..."
-                                className="w-full p-2 border rounded border-border"
-                              />
-                            </div>
-                          </div>
-                          <div className="bg-slate-50 p-4 flex justify-end gap-2 border-t">
-                            <button type="button" onClick={() => setShowAddConsignmentModal(false)} className="px-3 py-2 bg-slate-200 text-primary font-bold rounded">Batal</button>
-                            <button type="submit" className="px-4 py-2 bg-primary text-white font-bold rounded">Simpan Penerimaan</button>
-                          </div>
-                        </form>
-                      </div>
-                    )}
-
-
-                    {/* MODAL 2: SELL CONSIGNMENT */}
-                    {showSellConsignmentModal && (
-                      <div className="fixed inset-0 z-[100] bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto">
-                        <form onSubmit={handleSellConsignment} className="bg-white rounded-card shadow-xl border border-border w-full max-w-sm overflow-hidden animate-fade-in relative my-auto">
-                          <div className="bg-slate-50 border-b border-border text-primary p-4 flex justify-between items-center">
-                            <h4 className="font-extrabold text-sm uppercase tracking-wider text-primary">Catat Penjualan Barang Konsinyasi</h4>
-                            <button type="button" onClick={() => setShowSellConsignmentModal(false)} className="text-slate-400 hover:text-primary cursor-pointer"><X size={16} /></button>
-                          </div>
-                          <div className="p-5 space-y-3 text-sm">
-                            <div className="space-y-1">
-                              <label className="font-bold text-secondary uppercase text-xs">Pilih Batch Barang Titipan</label>
-                              <SearchableSelect
-                                value={consignmentSellForm.id}
-                                onChange={(val) => setConsignmentSellForm({ ...consignmentSellForm, id: val })}
-                                options={consignments.filter((c: any) => c.status === 'Aktif').map((c: any) => {
-                                  const available = c.qtyReceived - c.qtySold - c.qtyReturned;
-                                  return { label: `${c.nama} (${c.consignor}) • Sisa: ${available} pcs`, value: c.id };
-                                })}
-                                placeholder="-- Pilih Batch Titipan --"
-                              />
-                            </div>
-                            <div className="space-y-1">
-                              <label className="font-bold text-secondary uppercase text-xs">Kuantitas Terjual Baru</label>
-                              <input
-                                type="text" inputMode="numeric"
-                                min="1"
-                                value={consignmentSellForm.qtySold}
-                                onChange={(e) => setConsignmentSellForm({ ...consignmentSellForm, qtySold: parseInt(e.target.value) || 0 })}
-                                className="w-full p-2 border rounded border-border font-extrabold text-right"
-                                required
-                              />
-                            </div>
-                          </div>
-                          <div className="bg-slate-50 p-4 flex justify-end gap-2 border-t">
-                            <button type="button" onClick={() => setShowSellConsignmentModal(false)} className="px-3 py-2 bg-slate-200 text-primary font-bold rounded">Batal</button>
-                            <button type="submit" className="px-4 py-2 bg-primary text-white font-bold rounded">Catat Terjual</button>
-                          </div>
-                        </form>
-                      </div>
-                    )}
-                  </div>
-                );
-              })()}
-
-
-
-
-              {/* 6. PAJAK (PPN) */}
-              {activeTab === 'pajak_ppn' && (() => {
-                const taxSOs = salesOrders.filter(so => so.tanggal >= analitikStartDate && so.tanggal <= analitikEndDate && so.statusLogistik !== 'Void' && so.pajak > 0);
-                const ppnKeluaran = taxSOs.reduce((sum, so) => sum + so.pajak, 0);
-                const dppKeluaran = taxSOs.reduce((sum, so) => sum + so.subtotal, 0);
-
-                const taxPOs = purchaseOrders.filter(po => po.tanggal >= analitikStartDate && po.tanggal <= analitikEndDate && po.statusLogistik !== 'Void' && po.pajak > 0);
-                const ppnMasukan = taxPOs.reduce((sum, po) => sum + po.pajak, 0);
-                const dppMasukan = taxPOs.reduce((sum, po) => sum + po.subtotal, 0);
-
-                const ppnKurangBayar = ppnKeluaran - ppnMasukan;
-
-                return (
-                  <div className="space-y-6">
-                    {/* ponytail: standarisasi filter periode & jangka waktu */}
-                    <div className="bg-white border border-border p-3 rounded-card shadow-xs flex flex-wrap gap-4 items-center justify-between no-print">
-                      <div className="flex items-center gap-2">
-                        <span className="w-2 h-2 bg-primary rounded-full"></span>
-                        <h4 className="text-sm font-bold uppercase text-primary tracking-wider">Filter Periode Laporan</h4>
-                      </div>
-                      <div className="flex flex-wrap items-center gap-4">
-                        <div className="flex items-center gap-2">
-                          <span className="text-xs font-bold text-secondary uppercase">Periode:</span>
-                          <select defaultValue="monthly" className="text-sm font-medium text-primary p-1.5 border border-border rounded bg-slate-50 outline-none">
-                            <option value="daily">Harian</option>
-                            <option value="weekly">Mingguan</option>
-                            <option value="monthly">Bulanan</option>
-                            <option value="annual">Tahunan</option>
-                          </select>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <span className="text-xs font-bold text-secondary uppercase">Waktu:</span>
-                          <div className="flex items-center gap-1 border border-border rounded px-2 py-1 bg-slate-50">
-                            <input type="date" value={analitikStartDate} onChange={(e) => setAnalitikStartDate(e.target.value)} className="text-sm font-medium text-primary outline-none bg-transparent" />
-                            <span className="text-xs font-bold text-slate-400">s/d</span>
-                            <input type="date" value={analitikEndDate} onChange={(e) => setAnalitikEndDate(e.target.value)} className="text-sm font-medium text-primary outline-none bg-transparent" />
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                    <div className="bg-white border border-border p-6 rounded-card shadow-sm flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
-                      <div>
-                        <h4 className="text-sm font-extrabold text-primary uppercase tracking-wider flex items-center gap-2">
-                          <Calculator size={16} />
-                          Laporan Rekapitulasi Pajak PPN
-                        </h4>
-                        <p className="text-sm text-secondary mt-1">Ringkasan PPN Masukan (Pembelian) dan PPN Keluaran (Penjualan) untuk perhitungan Kurang/Lebih Bayar.</p>
-
-                      </div>
-                    </div>
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                      <div className="bg-white border border-border p-5 rounded-card shadow-sm">
-                        <div className="text-sm font-bold text-slate-500 uppercase tracking-wider mb-2">Total PPN Keluaran</div>
-                        <div className="text-2xl font-black text-primary">Rp {ppnKeluaran.toLocaleString('id-ID')}</div>
-                        <div className="text-[11px] text-secondary mt-1">Dari Total Penjualan (DPP): Rp {dppKeluaran.toLocaleString('id-ID')}</div>
-                      </div>
-                      <div className="bg-white border border-border p-5 rounded-card shadow-sm">
-                        <div className="text-sm font-bold text-slate-500 uppercase tracking-wider mb-2">Total PPN Masukan</div>
-                        <div className="text-2xl font-black text-primary">Rp {ppnMasukan.toLocaleString('id-ID')}</div>
-                        <div className="text-[11px] text-secondary mt-1">Dari Total Pembelian (DPP): Rp {dppMasukan.toLocaleString('id-ID')}</div>
-                      </div>
-                      <div className={`border p-5 rounded-card shadow-sm ${ppnKurangBayar > 0 ? 'bg-danger/10 border-danger/30 text-danger' : 'bg-success/10 border-success/30 text-success'}`}>
-                        <div className="text-sm font-bold uppercase tracking-wider mb-2">
-                          {ppnKurangBayar > 0 ? 'PPN Kurang Bayar' : 'PPN Lebih Bayar / Nihil'}
-                        </div>
-                        <div className="text-2xl font-black">Rp {Math.abs(ppnKurangBayar).toLocaleString('id-ID')}</div>
-                        <div className="text-[11px] mt-1 font-medium">
-                          {ppnKurangBayar > 0 ? 'Status: Wajib lapor dan bayar ke Kas Negara' : 'Status: Dapat dikompensasi ke masa pajak berikutnya'}
-
-                        </div>
-                      </div>
-                    </div>
-                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                      <div className="bg-white border border-border rounded-card shadow-sm overflow-hidden">
-                        <div className="bg-slate-50 border-b border-border p-4">
-                          <h4 className="text-sm font-bold text-primary uppercase">Rincian Faktur Keluaran (Penjualan)</h4>
-                        </div>
-                        <div className="overflow-x-auto">
-                          <table className="w-full text-left text-sm">
-                            <thead className="bg-slate-50 text-secondary">
-                              <tr>
-                                <th className="p-3">No. Doc</th>
-                                <th className="p-3">Tanggal</th>
-                                <th className="p-3">Customer</th>
-                                <th className="p-3 text-right">DPP</th>
-                                <th className="p-3 text-right">PPN</th>
-                              </tr>
-                            </thead>
-                            <tbody className="divide-y divide-slate-100">
-                              {taxSOs.length === 0 ? (
-                                <tr>
-                                  <td colSpan={5} className="p-4 text-center text-slate-400 italic">Tidak ada transaksi yang dikenakan PPN.</td>
-                                </tr>
-                              ) : taxSOs.map(so => (
-                                <tr key={so.id} className="hover:bg-slate-50">
-                                  <td className="p-3 font-mono font-bold text-primary">{so.id}</td>
-                                  <td className="p-3 text-secondary">{so.tanggal}</td>
-                                  <td className="p-3 font-medium">{so.pelanggan}</td>
-                                  <td className="p-3 text-right font-mono text-secondary">Rp {so.subtotal.toLocaleString('id-ID')}</td>
-                                  <td className="p-3 text-right font-mono font-bold text-primary">Rp {so.pajak.toLocaleString('id-ID')}</td>
-                                </tr>
-                              ))}
-                            </tbody>
-                          </table>
-
-                        </div>
-                      </div>
-                      <div className="bg-white border border-border rounded-card shadow-sm overflow-hidden">
-                        <div className="bg-slate-50 border-b border-border p-4">
-                          <h4 className="text-sm font-bold text-primary uppercase">Rincian Faktur Masukan (Pembelian)</h4>
-                        </div>
-                        <div className="overflow-x-auto">
-                          <table className="w-full text-left text-sm">
-                            <thead className="bg-slate-50 text-secondary">
-                              <tr>
-                                <th className="p-3">No. Doc</th>
-                                <th className="p-3">Tanggal</th>
-                                <th className="p-3">Supplier</th>
-                                <th className="p-3 text-right">DPP</th>
-                                <th className="p-3 text-right">PPN</th>
-                              </tr>
-                            </thead>
-                            <tbody className="divide-y divide-slate-100">
-                              {taxPOs.length === 0 ? (
-                                <tr>
-                                  <td colSpan={5} className="p-4 text-center text-slate-400 italic">Tidak ada transaksi yang dikenakan PPN.</td>
-                                </tr>
-                              ) : taxPOs.map(po => (
-                                <tr key={po.id} className="hover:bg-slate-50">
-                                  <td className="p-3 font-mono font-bold text-primary">{po.id}</td>
-                                  <td className="p-3 text-secondary">{po.tanggal}</td>
-                                  <td className="p-3 font-medium">{po.supplier}</td>
-                                  <td className="p-3 text-right font-mono text-secondary">Rp {po.subtotal.toLocaleString('id-ID')}</td>
-                                  <td className="p-3 text-right font-mono font-bold text-primary">Rp {po.pajak.toLocaleString('id-ID')}</td>
-                                </tr>
-                              ))}
-                            </tbody>
-                          </table>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                );
-              })()}
-
-              {/* 5. LAPORAN PENJUALAN HARIAN */}
-              {activeTab === 'penjualan_harian' && (() => {
-                // Determine number of days in selected month (assuming 2026)
-                const [year, monthStr] = dailySalesReportMonth.split('-');
-                const monthInt = parseInt(monthStr) || 6;
-                const daysInMonth = new Date(parseInt(year), monthInt, 0).getDate();
-                const daysArray = Array.from({ length: daysInMonth }, (_, i) => i + 1);
-
-                const getMonthNameIndo = (num: number) => {
-                  const names = ['Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni', 'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'];
-                  return names[num - 1] || 'Juni';
-                };
-
-                return (
-                  <div className="space-y-6">
-                    {/* Month selector filter */}
-                    <div className="bg-white border border-border p-4 rounded-card shadow-xs flex flex-wrap gap-4 items-center justify-between">
-                      <div className="flex items-center gap-2">
-                        <span className="w-2.5 h-2.5 bg-primary rounded-full"></span>
-                        <h4 className="text-sm font-bold uppercase text-primary tracking-wider">Pilih Bulan Penjualan Harian</h4>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <select
-                          value={dailySalesReportMonth}
-                          onChange={(e) => setDailySalesReportMonth(e.target.value)}
-                          className="p-2.5 border border-border rounded-card text-sm font-bold text-primary bg-white shadow-xs"
-                        >
-                          <option value="2026-05">Mei 2026</option>
-                          <option value="2026-06">Juni 2026</option>
-                          <option value="2026-07">Juli 2026</option>
-                        </select>
-
-                      </div>
-                    </div>
-                    {/* Huge Daily Sales Matrix */}
-                    <div className="bg-white border border-border rounded-card shadow-xs overflow-hidden">
-                      <div className="p-4 bg-slate-50 border-b border-border flex justify-between items-center">
-                        <h4 className="text-sm font-extrabold text-primary uppercase tracking-wider flex items-center gap-2">
-                          <span>📅 Laporan Penjualan Harian per Barang</span>
-                          <span className="text-[11px] text-primary bg-success/10 px-2 py-0.5 rounded font-bold border border-success/30">{getMonthNameIndo(monthInt)} {year}</span>
-                        </h4>
-                        <span className="text-[11px] text-slate-400 font-mono">Geser tabel ke kanan untuk melihat s/d akhir tanggal</span>
-
-                      </div>
-                      <div className="overflow-x-auto">
-                        <table className="w-full text-left text-sm border-collapse">
-                          <thead>
-                            <tr className="bg-primary text-white uppercase tracking-widest text-[8px] font-black divide-x divide-teal-600">
-                              <th className="p-3 bg-primary text-white sticky left-0 z-10 w-44 border-r border-teal-600">Nama Barang (SKU)</th>
-                              {daysArray.map(day => (
-                                <th key={day} className="p-2 text-center w-10 min-w-[36px] bg-primary text-white">
-                                  {day}
-                                </th>
-                              ))}
-                              <th className="p-3 text-right bg-primary text-white w-24">Total Qty</th>
-                              <th className="p-3 text-right bg-primary text-white w-32">Total Nilai</th>
-                            </tr>
-                          </thead>
-                          <tbody className="divide-y divide-slate-200 font-semibold text-primary">
-                            {products.filter(p => p.kategori === 'Barang Jadi').map((p: any) => {
-                              let totalQtySold = 0;
-                              let totalRevenue = 0;
-
-                              return (
-                                <tr key={p.sku} className="hover:bg-slate-50 divide-x divide-slate-200">
-                                  {/* Fixed First Column */}
-                                  <td className="p-3 bg-white sticky left-0 z-10 border-r border-border shadow-[2px_0_5px_rgba(0,0,0,0.03)] font-bold text-primary w-44">
-                                    <div className="truncate text-[11px]">{p.nama}</div>
-                                    <div className="font-mono text-[11px] text-primary">{p.sku}</div>
-                                  </td>
-
-                                  {/* Day Cells */}
-                                  {daysArray.map(day => {
-                                    const dayStr = String(day).padStart(2, '0');
-                                    const fullDateStr = `${dailySalesReportMonth}-${dayStr}`;
-
-                                    // Scan sales orders for this specific date and SKU
-                                    const dailyQty = salesOrders
-                                      .filter(so => so.tanggal === fullDateStr && so.statusLogistik !== 'Void')
-                                      .reduce((sum, so) => {
-                                        const item = so.items.find((i: any) => i.sku === p.sku);
-                                        return sum + (item ? item.qty : 0);
-                                      }, 0);
-
-                                    totalQtySold += dailyQty;
-                                    totalRevenue += dailyQty * (p.hj || 25000);
-
-                                    return (
-                                      <td key={day} className={`p-2 text-center font-mono text-[11px] ${dailyQty > 0 ? 'bg-success/10 text-success font-bold border border-teal-100' : 'text-slate-400'}`}>
-                                        {dailyQty > 0 ? dailyQty : '-'}
-                                      </td>
-                                    );
-                                  })}
-
-                                  {/* Aggregates Columns */}
-                                  <td className="p-3 text-right font-mono font-black text-primary w-24">
-                                    {totalQtySold.toLocaleString('id-ID')}
-                                  </td>
-                                  <td className="p-3 text-right font-mono font-black text-primary w-32">
-                                    Rp {totalRevenue.toLocaleString('id-ID')}
-                                  </td>
-                                </tr>
-                              );
-                            })}
-                          </tbody>
-                        </table>
-                      </div>
-                    </div>
-                  </div>
-                );
-              })()}
-              {/* ponytail: sticky bottom footer ekspor PDF & Excel untuk semua laporan */}
-              <div className="sticky bottom-0 z-30 flex items-center justify-end gap-3 p-3 bg-white/95 backdrop-blur-sm border-t border-slate-200 shadow-lg print:hidden rounded-b-xl">
-                <button
-                  onClick={() => {
-                    if (activeTab === 'laba_rugi') {
-                      exportElementToPDF('laba-rugi-print-section', `Laporan_Laba_Rugi_${analitikStartDate}_${analitikEndDate}.pdf`);
-                    } else {
-                      window.focus();
-                      window.print();
-                    }
-                  }}
-                  disabled={isExportingPDF}
-                  className={`bg-primary hover:bg-teal-700 text-white px-4 py-2 text-sm font-bold rounded-lg flex items-center gap-1.5 shadow transition-all cursor-pointer ${isExportingPDF ? 'opacity-70 cursor-not-allowed' : ''}`}
-                >
-                  {isExportingPDF ? (
-                    <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>
-                  ) : (
-                    <Printer size={15} />
-                  )}
-                  <span>{activeTab === 'laba_rugi' ? 'Download PDF' : 'Cetak PDF'}</span>
-                </button>
-                <button
-                  onClick={() => {
-                    triggerToast("Laporan berhasil diunduh dalam format Excel!", "success");
-                  }}
-                  className="bg-success hover:bg-teal-600 text-white px-4 py-2 text-sm font-bold rounded-lg flex items-center gap-1.5 shadow transition-all cursor-pointer"
-                >
-                  <FileSpreadsheet size={15} />
-                  <span>Unduh Excel (.xlsx)</span>
-                </button>
-              </div>
-            </div>
-
+            <ReportsTab
+              activeTab={activeTab}
+              analitikStartDate={analitikStartDate} setAnalitikStartDate={setAnalitikStartDate}
+              analitikEndDate={analitikEndDate} setAnalitikEndDate={setAnalitikEndDate}
+              isExportingPDF={isExportingPDF} exportElementToPDF={exportElementToPDF} triggerToast={triggerToast}
+              salesOrders={salesOrders} purchaseOrders={purchaseOrders} cashLedger={cashLedger} settingCashAccounts={settingCashAccounts}
+              arusKasFilterAkun={arusKasFilterAkun} setArusKasFilterAkun={setArusKasFilterAkun}
+              showManualCashModal={showManualCashModal} setShowManualCashModal={setShowManualCashModal} setManualCashForm={setManualCashForm}
+              consignments={consignments} setConsignments={setConsignments}
+              consignmentForm={consignmentForm} setConsignmentForm={setConsignmentForm}
+              consignmentSellForm={consignmentSellForm} setConsignmentSellForm={setConsignmentSellForm}
+              showAddConsignmentModal={showAddConsignmentModal} setShowAddConsignmentModal={setShowAddConsignmentModal}
+              showSellConsignmentModal={showSellConsignmentModal} setShowSellConsignmentModal={setShowSellConsignmentModal}
+              setCashLedger={setCashLedger} saveCashEntry={saveCashEntry} products={products}
+              dailySalesReportMonth={dailySalesReportMonth} setDailySalesReportMonth={setDailySalesReportMonth}
+            />
           )}
 
           {/* TAB 8: PENGATURAN / SETTING */}
           {activeTab === 'setting' && (
-            <div className="space-y-6">
-              {/* Header Panel */}
-              <div className="bg-gradient-to-r from-slate-800 to-slate-900 border border-slate-700 rounded-2xl p-6 shadow-md text-white">
-                <div className="flex items-center gap-3">
-                  <div className="p-3 bg-success/100/10 rounded-card border border-teal-500/20">
-                    <Settings className="text-primary" size={24} />
-                  </div>
-                  <div>
-                    <h2 className="text-lg font-extrabold tracking-tight">⚙️ Pusat Pengaturan &amp; Konfigurasi Sistem</h2>
-                    <p className="text-sm text-slate-400">Pusat Konfigurasi INO ERP | Atur profil usaha, referensi dropdown, prefix SKU, saluran platform, tipe bisnis, dan hak akses staf.</p>
-
-                  </div>
-                </div>
-              </div>
-              {/* Sub Navigation Tabs */}
-              <div className="flex items-center gap-1 border-b border-border overflow-x-auto pb-px scrollbar-none">
-                {[
-                  { id: 'profil', label: '🏪 Profil Toko' },
-                  { id: 'user', label: '👤 Pengguna & Sandi' }
-                ].map(tab => (
-                  <button
-                    key={tab.id}
-                    type="button"
-                    onClick={() => setSettingSubTab(tab.id)}
-                    className={`flex items-center gap-1.5 px-4 py-3 text-sm font-bold transition-all border-b-2 whitespace-nowrap ${settingSubTab === tab.id
-                        ? 'border-primary text-primary bg-success/10'
-                        : 'border-transparent text-secondary hover:text-primary hover:bg-slate-55'
-                      }`}
-                  >
-                    {tab.label}
-                  </button>
-                ))}
-
-              </div>
-              {/* TAB CONTENT: PROFIL TOKO */}
-              {settingSubTab === 'profil' && (
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6 animate-fade-in">
-                  {/* Identitas Toko */}
-                  <div className="bg-white border border-border rounded-card p-5 shadow-xs space-y-4">
-                    <h3 className="text-sm font-black text-primary uppercase tracking-wider flex items-center gap-2 border-b pb-2">
-                      <Settings className="text-primary" size={16} />
-                      <span>🏪 Identitas Toko</span>
-                    </h3>
-
-                    <div className="space-y-3">
-                      <div>
-                        <label className="block text-[11px] font-black uppercase text-secondary mb-1">Nama Toko *</label>
-                        <input
-                          type="text"
-                          value={namaToko}
-                          onChange={(e) => setNamaToko(e.target.value)}
-                          className="w-full p-2.5 border border-border rounded-card text-sm font-bold text-primary focus:ring-1 focus:ring-primary bg-white"
-                          placeholder="Masukkan nama toko..."
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-[11px] font-black uppercase text-secondary mb-1">Alamat Lengkap</label>
-                        <input
-                          type="text"
-                          value={alamatToko}
-                          onChange={(e) => setAlamatToko(e.target.value)}
-                          className="w-full p-2.5 border border-border rounded-card text-sm font-bold text-primary focus:ring-1 focus:ring-primary bg-white"
-                          placeholder="Jl. Contoh No. 1, Kota"
-                        />
-                      </div>
-                      <div className="grid grid-cols-2 gap-3">
-                        <div>
-                          <label className="block text-[11px] font-black uppercase text-secondary mb-1">No. Telepon / WhatsApp</label>
-                          <input
-                            type="text"
-                            value={telpToko}
-                            onChange={(e) => setTelpToko(e.target.value)}
-                            className="w-full p-2.5 border border-border rounded-card text-sm font-bold text-primary focus:ring-1 focus:ring-primary bg-white"
-                            placeholder="081234567890"
-                          />
-                        </div>
-                        <div>
-                          <label className="block text-[11px] font-black uppercase text-secondary mb-1">Kota</label>
-                          <input
-                            type="text"
-                            value={kotaToko}
-                            onChange={(e) => setKotaToko(e.target.value)}
-                            className="w-full p-2.5 border border-border rounded-card text-sm font-bold text-primary focus:ring-1 focus:ring-primary bg-white"
-                            placeholder="Bali"
-                          />
-
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                  {/* Finansial & File System */}
-                  <div className="bg-white border border-border rounded-card p-5 shadow-xs space-y-4">
-                    <h3 className="text-sm font-black text-primary uppercase tracking-wider flex items-center gap-2 border-b pb-2">
-                      <DollarSign className="text-primary" size={16} />
-                      <span>💰 Keuangan &amp; File</span>
-                    </h3>
-
-                    <div className="space-y-3">
-                      <div className="grid grid-cols-3 gap-2">
-                        <div>
-                          <label className="block text-[11px] font-black uppercase text-secondary mb-1">PPN Rate (%)</label>
-                          <input
-                            type="text" inputMode="numeric"
-                            value={Math.round(ppnRate * 100)}
-                            onChange={(e) => setPpnRate((parseFloat(e.target.value) || 0) / 100)}
-                            className="w-full p-2.5 border border-border rounded-card text-sm font-bold text-primary focus:ring-1 focus:ring-primary bg-white font-mono"
-                            min="0"
-                            max="30"
-                          />
-                        </div>
-                        <div>
-                          <label className="block text-[11px] font-black uppercase text-secondary mb-1">Metode HPP</label>
-                          <select
-                            value={metodeHppDefault}
-                            onChange={(e) => setMetodeHppDefault(e.target.value)}
-                            className="w-full p-2.5 border border-border rounded-card text-sm font-bold text-primary focus:ring-1 focus:ring-primary bg-white"
-                          >
-                            <option value="Moving Average">Moving Average</option>
-                            <option value="FIFO">FIFO</option>
-                          </select>
-                        </div>
-                        <div>
-                          <label className="block text-[11px] font-black uppercase text-secondary mb-1">Mata Uang</label>
-                          <input
-                            type="text"
-                            value={mataUang}
-                            onChange={(e) => setMataUang(e.target.value)}
-                            className="w-full p-2.5 border border-border rounded-card text-sm font-bold text-primary focus:ring-1 focus:ring-primary bg-white font-mono"
-                          />
-
-                        </div>
-                      </div>
-                      <div>
-                        <label className="block text-[11px] font-black uppercase text-secondary mb-1">Google Drive Folder ID (Struk PDF)</label>
-                        <input
-                          type="text"
-                          value={driveFolderStruk}
-                          onChange={(e) => setDriveFolderStruk(e.target.value)}
-                          className="w-full p-2.5 border border-border rounded-card text-sm font-bold text-primary focus:ring-1 focus:ring-primary bg-white font-mono"
-                          placeholder="ID Folder..."
-                        />
-
-                      </div>
-                      <div>
-                        <label className="block text-[11px] font-black uppercase text-secondary mb-1">Format Tanggal</label>
-                        <input
-                          type="text"
-                          value={formatTanggal}
-                          onChange={(e) => setFormatTanggal(e.target.value)}
-                          className="w-full p-2.5 border border-border rounded-card text-sm font-bold text-primary focus:ring-1 focus:ring-primary bg-white font-mono"
-                        />
-
-                      </div>
-                    </div>
-                  </div>
-                  {/* TIPE BISNIS MOVED HERE */}
-                  <div className="bg-white border border-border rounded-card p-5 shadow-xs space-y-4 md:col-span-2">
-                    <div className="border-b pb-2">
-                      <h3 className="text-sm font-black text-primary uppercase tracking-wider flex items-center gap-2">
-                        <Layers className="text-primary" size={16} />
-                        <span>Tipe Bisnis &amp; Modul Aktif</span>
-                      </h3>
-                      <p className="text-sm text-secondary mt-1">
-                        Pilih tipe model operasional bisnis Anda. Beberapa menu, modul perhitungan, dan form (seperti Formula BOM &amp; Perintah Produksi) akan menyesuaikan secara dinamis.
-                      </p>
-
-                    </div>
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pt-2">
-                      {[
-                        {
-                          id: 'Manufaktur',
-                          title: '🏭 Industri Manufaktur / Pabrik',
-                          desc: 'Fitur penuh pelacakan bahan baku, formulasi resep (BOM), dan otomatisasi konversi bahan baku menjadi barang jadi.',
-                          badge: 'Modul Produksi Aktif'
-                        },
-                        {
-                          id: 'FnB',
-                          title: '🍔 Food &amp; Beverage (FnB)',
-                          desc: 'Pengelolaan bahan baku dapur, konversi resep saji, dan pembatasan stok bahan basah/kering.',
-                          badge: 'Modul Produksi Aktif'
-                        },
-                        {
-                          id: 'Retail',
-                          title: '🛒 Retail / Jasa Dagang',
-                          desc: 'Fokus murni pembelian barang jadi langsung jual kembali. Menyembunyikan fungsionalitas produksi pabrikasi.',
-                          badge: 'Sederhana &amp; Ringan'
-                        }
-                      ].map(item => (
-                        <button
-                          key={item.id}
-                          type="button"
-                          onClick={() => {
-                            setTipeBisnis(item.id);
-                            triggerToast(`Tipe bisnis berhasil diubah ke: ${item.id}`, 'success');
-                          }}
-                          className={`text-left p-4 rounded-card border-2 transition-all flex flex-col gap-1.5 h-full ${tipeBisnis === item.id
-                              ? 'bg-success/10 border-primary shadow-sm'
-                              : 'bg-white border-slate-150 hover:bg-slate-50/50 hover:border-border'
-                            }`}
-                        >
-                          <div className="flex justify-between items-start w-full">
-                            <span className="font-extrabold text-sm text-primary leading-tight">{item.title}</span>
-                            <span className={`text-[8px] font-black uppercase px-2 py-0.5 rounded-full whitespace-nowrap ${tipeBisnis === item.id ? 'bg-success/20 text-success' : 'bg-slate-100 text-secondary'
-                              }`}>
-                              {item.badge}
-                            </span>
-                          </div>
-                          <p className="text-[11px] text-secondary leading-normal mt-1">{item.desc}</p>
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {/* TAB CONTENT: PENGGUNA */}
-              {settingSubTab === 'user' && (
-                <div className="space-y-6 animate-fade-in">
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                    {/* Status Login Switch */}
-                    <div className="bg-white border border-border rounded-card p-5 shadow-xs space-y-4">
-                      <div className="flex items-center justify-between">
-                        <div>
-                          <h3 className="text-sm font-black text-primary uppercase tracking-wider block">🔒 Gerbang Autentikasi Login</h3>
-                          <span className="text-[11px] text-slate-400">Aktifkan form autentikasi di layar utama</span>
-                        </div>
-                        <label className="relative inline-flex items-center cursor-pointer">
-                          <input
-                            type="checkbox"
-                            checked={isLoginActive}
-                            onChange={(e) => {
-                              const val = e.target.checked;
-                              if (val) {
-                                if (loginUsername.trim() === '' || loginPassword.trim() === '') {
-                                  alert('Silakan atur Username dan Password Superadmin terlebih dahulu sebelum mengunci sistem!');
-                                  return;
-                                }
-                                setIsLoginActive(val);
-                                setIsLoggedIn(false);
-                                triggerToast('Keamanan login aktif! Silakan masuk dengan kredensial Anda.', 'success');
-                              } else {
-                                setIsLoginActive(val);
-                                setIsLoggedIn(true);
-                                triggerToast('Keamanan dinonaktifkan.', 'warning');
-                              }
-                            }}
-                            className="sr-only peer"
-                          />
-                          <div className="w-11 h-6 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-border after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-primary"></div>
-                        </label>
-
-                      </div>
-                      <div className="p-3.5 bg-success/10 text-success rounded-card border border-emerald-150 text-[11px] font-semibold leading-relaxed">
-                        {isLoginActive
-                          ? '🔒 Proteksi Aktif: Sistem terkunci otomatis saat pertama kali dibuka, memerlukan kredensial masuk.'
-                          : '✅ Akses Bebas Aktif: Siapa pun dapat mengoperasikan sistem ERP tanpa meminta kata sandi.'
-                        }
-
-                      </div>
-                    </div>
-                    {/* Superadmin Credentials */}
-                    <div className="bg-white border border-border rounded-card p-5 shadow-xs space-y-3">
-                      <h3 className="text-sm font-black text-primary uppercase tracking-wider flex items-center gap-2 border-b pb-2">
-                        <Lock className="text-primary" size={14} />
-                        <span>👑 Akun Superadmin Utama</span>
-                      </h3>
-                      <div className="grid grid-cols-2 gap-3">
-                        <div>
-                          <label className="block text-[11px] font-black uppercase text-secondary mb-1">Username Admin</label>
-                          <input
-                            type="text"
-                            value={loginUsername}
-                            onChange={(e) => setLoginUsername(e.target.value)}
-                            className="w-full p-2.5 border border-border rounded-card text-sm font-bold font-mono text-primary focus:ring-1 focus:ring-primary bg-white shadow-inner"
-                          />
-                        </div>
-                        <div>
-                          <label className="block text-[11px] font-black uppercase text-secondary mb-1">Password Sistem</label>
-                          <input
-                            type="password"
-                            value={loginPassword}
-                            onChange={(e) => setLoginPassword(e.target.value)}
-                            onBlur={async (e) => {
-                              const val = e.target.value;
-                              if (val && !(val.length === 64 && /^[0-9a-f]{64}$/i.test(val))) {
-                                setLoginPassword(await hashPassword(val));
-                              }
-                            }}
-                            className="w-full p-2.5 border border-border rounded-card text-sm font-bold font-mono text-primary focus:ring-1 focus:ring-primary bg-white shadow-inner"
-                          />
-                        </div>
-                      </div>
-                      <p className="text-[11px] text-slate-400 italic mt-1">Superadmin memiliki hak akses tak terbatas ke seluruh data keuangan dan konfigurasi.</p>
-
-                    </div>
-                  </div>
-                  {/* Team Members List */}
-                  <div className="bg-white border border-border rounded-card p-5 shadow-xs space-y-3">
-                    <div className="flex justify-between items-center border-b pb-2">
-                      <div>
-                        <h3 className="text-sm font-black text-primary uppercase tracking-wider">👤 Daftar Pengguna &amp; Otoritas Tim</h3>
-                        <p className="text-[11px] text-slate-400">Atur PIN masuk untuk tim operasional gudang dan kasir.</p>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => setSettingUsersList([...settingUsersList, { email: '', nama: '', role: 'Kasir', pin: '' }])}
-                        className="px-3.5 py-1.5 bg-primary hover:bg-primary-hover text-white text-[11px] font-bold rounded-card shadow-xs"
-                      >
-                        + Tambah Staf
-                      </button>
-
-                    </div>
-                    <div className="overflow-x-auto">
-                      <table className="w-full text-sm text-left">
-                        <thead>
-                          <tr className="bg-slate-50 text-secondary uppercase tracking-wider text-[11px] font-bold border-b">
-                            <th className="p-3">Email / Username</th>
-                            <th className="p-3">Nama Lengkap</th>
-                            <th className="p-3">Role</th>
-                            <th className="p-3 text-center">PIN (4-6 Digit)</th>
-                            <th className="p-3 text-center">Aksi</th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-slate-100 font-semibold text-primary">
-                          {settingUsersList.map((usr, idx) => (
-                            <tr key={idx} className="hover:bg-slate-50/50">
-                              <td className="p-2">
-                                <input
-                                  type="email"
-                                  value={usr.email}
-                                  onChange={(e) => {
-                                    const arr = [...settingUsersList];
-                                    arr[idx] = { ...usr, email: e.target.value };
-                                    setSettingUsersList(arr);
-                                  }}
-                                  className="w-full p-2 border border-border rounded-card text-sm"
-                                  placeholder="kasir@toko.com"
-                                />
-                              </td>
-                              <td className="p-2">
-                                <input
-                                  type="text"
-                                  value={usr.nama}
-                                  onChange={(e) => {
-                                    const arr = [...settingUsersList];
-                                    arr[idx] = { ...usr, nama: e.target.value };
-                                    setSettingUsersList(arr);
-                                  }}
-                                  className="w-full p-2 border border-border rounded-card text-sm"
-                                  placeholder="Nama lengkap..."
-                                />
-                              </td>
-                              <td className="p-2">
-                                <select
-                                  value={usr.role}
-                                  onChange={(e) => {
-                                    const arr = [...settingUsersList];
-                                    arr[idx] = { ...usr, role: e.target.value };
-                                    setSettingUsersList(arr);
-                                  }}
-                                  className="p-2 border border-border rounded-card text-sm font-bold text-primary bg-white"
-                                >
-                                  <option value="Admin">Admin</option>
-                                  <option value="Manager">Manager</option>
-                                  <option value="Kasir">Kasir</option>
-                                  <option value="Gudang">Gudang</option>
-                                </select>
-                              </td>
-                              <td className="p-2">
-                                <input
-                                  type="password"
-                                  value={usr.pin}
-                                  onChange={(e) => {
-                                    const arr = [...settingUsersList];
-                                    arr[idx] = { ...usr, pin: e.target.value };
-                                    setSettingUsersList(arr);
-                                  }}
-                                  onBlur={async (e) => {
-                                    const val = e.target.value;
-                                    if (val && !(val.length === 64 && /^[0-9a-f]{64}$/i.test(val))) {
-                                      const arr = [...settingUsersList];
-                                      arr[idx] = { ...usr, pin: await hashPassword(val) };
-                                      setSettingUsersList(arr);
-                                    }
-                                  }}
-                                  className="w-24 mx-auto block text-center p-2 border border-border rounded-card text-sm font-mono font-bold"
-                                  placeholder="PIN..."
-                                />
-                              </td>
-                              <td className="p-2 text-center">
-                                <button
-                                  onClick={() => setSettingUsersList(settingUsersList.filter((_, i) => i !== idx))}
-                                  className="text-danger hover:text-danger p-1 rounded-card hover:bg-danger/10"
-                                >
-                                  <Trash2 size={14} />
-                                </button>
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
-                </div>
-              )}
-              {/* Reset Database Button */}
-              <div className="bg-slate-100 rounded-card p-5 border border-border flex flex-col sm:flex-row justify-between items-center gap-3">
-                <div>
-                  <h4 className="text-sm font-extrabold text-primary">⚠️ Sinkronisasi Berhasil</h4>
-                  <p className="text-[11px] text-secondary">Semua pengaturan disimpan otomatis ke penyimpanan lokal browser Anda.</p>
-                  <button
-                    onClick={() => {
-                      const confirmReset = window.confirm('Apakah Anda yakin ingin menyetel ulang seluruh database simulasi ke kondisi awal pabrik? Tindakan ini tidak dapat dibatalkan.');
-                      if (confirmReset) {
-                        localStorage.clear();
-                        window.location.reload();
-                      }
-                    }}
-                    className="px-4 py-2 bg-danger hover:bg-danger text-white font-extrabold text-[11px] rounded-card transition-all uppercase tracking-wider whitespace-nowrap"
-                  >
-                    Reset Seluruh Data Simulasi
-                  </button>
-                </div>
-              </div>
-            </div>
+            <SettingsTab
+              namaToko={namaToko} setNamaToko={setNamaToko}
+              alamatToko={alamatToko} setAlamatToko={setAlamatToko}
+              telpToko={telpToko} setTelpToko={setTelpToko}
+              kotaToko={kotaToko} setKotaToko={setKotaToko}
+              ppnRate={ppnRate} setPpnRate={setPpnRate}
+              metodeHppDefault={metodeHppDefault} setMetodeHppDefault={setMetodeHppDefault}
+              mataUang={mataUang} setMataUang={setMataUang}
+              driveFolderStruk={driveFolderStruk} setDriveFolderStruk={setDriveFolderStruk}
+              formatTanggal={formatTanggal} setFormatTanggal={setFormatTanggal}
+              tipeBisnis={tipeBisnis} setTipeBisnis={setTipeBisnis}
+              isLoginActive={isLoginActive} setIsLoginActive={setIsLoginActive}
+              loginUsername={loginUsername} setLoginUsername={setLoginUsername}
+              loginPassword={loginPassword} setLoginPassword={setLoginPassword}
+              settingUsersList={settingUsersList} setSettingUsersList={setSettingUsersList}
+              setIsLoggedIn={setIsLoggedIn}
+              triggerToast={triggerToast}
+            />
           )}
 
           {/* TAB 10: DEVELOPER CODE EXPORTER & GOOGLE SHEETS HUB */}
@@ -10837,7 +8641,7 @@ export default function App() {
                     </div>
                     <div>
                       <span className="text-slate-400 font-semibold block uppercase text-xs">Estimasi HPP</span>
-                      <span className="font-mono font-bold text-primary mt-0.5 block">Rp {viewingProductTx.hpp.toLocaleString('id-ID')}</span>
+                      <span className="font-mono font-bold text-primary mt-0.5 block">Rp {(viewingProductTx?.hpp || 0).toLocaleString('id-ID')}</span>
 
                     </div>
                   </div>
@@ -11407,7 +9211,7 @@ export default function App() {
 
       {/* Mobile Bottom Navigation Bar */}
       <nav className="fixed bottom-0 left-0 right-0 bg-white border-t border-border grid grid-cols-5 md:hidden z-50 pb-safe shadow-lg">
-        {NAV_GROUPS.map(group => {
+        {visibleNavGroups.map(group => {
           const active = isGroupActive(group);
           return (
             <button

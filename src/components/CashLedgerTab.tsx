@@ -31,15 +31,28 @@ export const CashLedgerTab: React.FC<CashLedgerTabProps> = ({
   handleDeleteManualCash
 }) => {
   const activeAkun = selectedCashAccount?.nama || bukuBesarActiveAkun || (settingCashAccounts.length > 0 ? settingCashAccounts[0].nama : '');
-  const filteredLedger = cashLedger.filter(c => (c.akun || 'Bank') === activeAkun);
-  
-  // Calculate current balances for list view
+  // Calculate current balances dynamically
   const currentBalances: Record<string, number> = {};
   settingCashAccounts.forEach(acc => currentBalances[acc.nama] = 0);
   cashLedger.forEach(c => {
     if (currentBalances.hasOwnProperty(c.akun || 'Bank')) {
-      currentBalances[c.akun || 'Bank'] = c.saldo;
+      currentBalances[c.akun || 'Bank'] += (c.debit || 0) - (c.kredit || 0);
     }
+  });
+
+  const sortedFilteredLedger = [...cashLedger]
+    .filter(c => (c.akun || 'Bank') === activeAkun)
+    .sort((a, b) => {
+      const dateA = new Date(a.tanggal).getTime();
+      const dateB = new Date(b.tanggal).getTime();
+      if (dateA !== dateB) return dateA - dateB;
+      return a.id.localeCompare(b.id);
+    });
+
+  let runningBalance = 0;
+  const processedLedger = sortedFilteredLedger.map(tx => {
+    runningBalance += (tx.debit || 0) - (tx.kredit || 0);
+    return { ...tx, computedSaldo: runningBalance };
   });
 
   return (
@@ -182,14 +195,14 @@ export const CashLedgerTab: React.FC<CashLedgerTabProps> = ({
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-border">
-                  {filteredLedger.length === 0 ? (
+                  {processedLedger.length === 0 ? (
                     <tr>
                       <td colSpan={9} className="p-8 text-center text-slate-500 font-medium">
                         Belum ada transaksi di akun kas ini.
                       </td>
                     </tr>
                   ) : (
-                    filteredLedger.map((tx) => (
+                    processedLedger.map((tx) => (
                       <tr key={tx.id} className="hover:bg-slate-50 transition-colors">
                         <td className="p-3 text-xs font-semibold">{tx.tanggal}</td>
                         <td className="p-3 text-xs font-mono font-bold text-slate-600">{tx.id}</td>
@@ -207,7 +220,7 @@ export const CashLedgerTab: React.FC<CashLedgerTabProps> = ({
                           {tx.kredit > 0 ? `Rp ${(tx.kredit ?? 0).toLocaleString('id-ID')}` : '-'}
                         </td>
                         <td className="p-3 text-right font-mono font-black text-slate-800">
-                          Rp {(tx.saldo ?? 0).toLocaleString('id-ID')}
+                          Rp {(tx.computedSaldo ?? 0).toLocaleString('id-ID')}
                         </td>
                         <td className="p-3 text-right">
                           {(tx.ref && tx.ref.startsWith('MANUAL')) ? (
