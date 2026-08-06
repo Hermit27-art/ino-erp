@@ -14,12 +14,13 @@ import autoTable from 'jspdf-autotable';
 import * as htmlToImage from 'html-to-image';
 import { loginToServer, getSessionUser, logoutFromServer, hashPassword, type SessionUser } from './authService';
 import { getProducts, saveProduct, deleteProduct, saveAllProducts, sendEmailReport } from './dataService';
-import { savePurchaseOrder, deletePurchaseOrder, saveAllPurchaseOrders } from './dataService';
-import { saveCustomer, deleteCustomer, saveAllCustomers } from "./dataService";
-import { saveSupplier, deleteSupplier, saveAllSuppliers } from "./dataService";
-import { appendOpnameLog, saveAllOpnameLog } from "./dataService";
-import { saveCashEntry, deleteCashEntry, saveAllCashLedger } from "./dataService";
-import { saveSalesOrder, deleteSalesOrder, saveAllSalesOrders, fetchSettings, saveSettingsToGas } from './dataService';
+import { getPurchaseOrders, savePurchaseOrder, deletePurchaseOrder, saveAllPurchaseOrders } from './dataService';
+import { getCustomers, saveCustomer, deleteCustomer, saveAllCustomers } from "./dataService";
+import { getSuppliers, saveSupplier, deleteSupplier, saveAllSuppliers } from "./dataService";
+import { getOpnameLog, appendOpnameLog, saveAllOpnameLog } from "./dataService";
+import { getCashLedger, saveCashEntry, deleteCashEntry, saveAllCashLedger } from "./dataService";
+import { getSalesOrders, saveSalesOrder, deleteSalesOrder, saveAllSalesOrders, fetchSettings, saveSettingsToGas } from './dataService';
+import { getConsignments, saveConsignment, deleteConsignment, saveAllConsignments } from './dataService';
 import {
   ShoppingCart, LayoutDashboard,
   Package,
@@ -426,6 +427,26 @@ export default function App() {
   const [cashLedger, setCashLedger] = useState<any[]>(() => getLocalStorage('ino_cash_ledger', INITIAL_CASH_LEDGER));
   const [isSavingCash, setIsSavingCash] = useState(false);
   const [consignments, setConsignments] = useState<any[]>(() => getLocalStorage('ino_consignments', INITIAL_CONSIGNMENT));
+
+  // ponytail: Sheets adalah sumber kebenaran, localStorage cuma cache offline.
+  // Tanpa ini, app cuma baca localStorage dan "reset" tiap kali origin iframe GAS berubah.
+  useEffect(() => {
+    Promise.all([
+      getProducts(), getCustomers(), getSuppliers(), getPurchaseOrders(),
+      getSalesOrders(), getCashLedger(), getOpnameLog(), getConsignments(),
+    ]).then(([p, c, s, po, so, cl, ol, cg]) => {
+      if (Array.isArray(p)) setProducts(p);
+      if (Array.isArray(c)) setCustomers(c);
+      if (Array.isArray(s)) setSuppliers(s);
+      if (Array.isArray(po)) setPurchaseOrders(po);
+      if (Array.isArray(so)) setSalesOrders(so);
+      if (Array.isArray(cl)) setCashLedger(cl);
+      if (Array.isArray(ol)) setOpnameLog(ol);
+      if (Array.isArray(cg)) setConsignments(cg);
+    }).catch((err) => {
+      triggerToast('Gagal memuat data dari Sheets: ' + err.message, 'error');
+    });
+  }, []);
 
   // Settings & Production States
   const [tipeBisnis, setTipeBisnis] = useState<string>(() => getLocalStorage('ino_tipe_bisnis', 'Manufaktur'));

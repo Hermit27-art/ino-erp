@@ -9,7 +9,7 @@
 // ============================================================
 
 function doGet(e) {
-  if (e.parameter.app === 'pos') {
+  if (e && e.parameter && e.parameter.app === 'pos') {
     return HtmlService.createTemplateFromFile('index_POS')
       .evaluate()
       .setTitle('INO POS')
@@ -27,6 +27,13 @@ function doGet(e) {
 // ----------------------------------------------------
 const SESSION_SHEET = '_Sessions';
 const SESSION_EXPIRY_HOURS = 24;
+
+// ponytail: dipakai fungsi-fungsi POS di bawah (getProdukList, simpanTransaksiPenjualan, dst),
+// sebelumnya dipakai tanpa didefinisikan -> ReferenceError saat POS jalan.
+const SHEET_PRODUCTS = 'Products';
+const SHEET_CUSTOMERS = 'Customers';
+const SHEET_SALES_ORDERS = 'SalesOrders';
+const SHEET_CASH_LEDGER = 'CashLedger';
 
 /**
  * Mendapatkan atau membuat sheet _Sessions untuk menyimpan token login.
