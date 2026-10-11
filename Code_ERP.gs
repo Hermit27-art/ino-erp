@@ -895,6 +895,8 @@ function getRiwayatHariIni() {
  * bersamaan (misal kasir checkout barengan dengan ERP menulis PO).
  */
 function simpanTransaksiPenjualan(payload) {
+  if (!payload || !payload.token) throw new Error('UNAUTHORIZED: Token POS tidak disertakan.');
+  requireAuth_(payload.token);
   const lock = LockService.getScriptLock();
   lock.waitLock(15000); // tunggu maks 15 detik kalau ada proses lain sedang menulis
 

@@ -188,7 +188,7 @@ function SpreadsheetComponent({ headers, rows, onChangeCell }: SpreadsheetCompon
       </div>
 
       {/* Grid Canvas */}
-      <div className="overflow-auto max-h-[420px]">
+      <div className="overflow-x-auto overflow-y-auto max-h-[420px] w-full">
         <table className="w-full border-collapse table-fixed min-w-[850px]">
           <thead>
             <tr className="bg-slate-100 text-secondary text-center select-none divide-x divide-gray-200">
@@ -373,6 +373,7 @@ const getTodayYMD = () => {
 };
 
 // ponytail: GAS environment check — login wajib aktif di production
+declare var google: any;
 const isGasEnv_ = typeof google !== 'undefined' && typeof (google as any)?.script !== 'undefined';
 
 export default function App() {
@@ -451,7 +452,8 @@ export default function App() {
   // Settings & Production States
   const [tipeBisnis, setTipeBisnis] = useState<string>(() => getLocalStorage('ino_tipe_bisnis', 'Manufaktur'));
   // ponytail: di GAS, login selalu wajib aktif — tidak boleh di-skip via localStorage
-  const [isLoginActive, setIsLoginActive] = useState<boolean>(() => isGasEnv_ ? true : getLocalStorage('ino_is_login_active', true));
+  // ponytail: di localhost paksa false agar bisa langsung masuk tanpa login saat testing
+  const [isLoginActive, setIsLoginActive] = useState<boolean>(() => isGasEnv_ ? true : false);
   const [isSetupMode, setIsSetupMode] = useState<boolean>(false);
   const [loginUsername, setLoginUsername] = useState<string>(() => getLocalStorage('ino_login_username', ''));
   const [loginPassword, setLoginPassword] = useState<string>(() => getLocalStorage('ino_login_password', ''));
@@ -3369,7 +3371,7 @@ export default function App() {
         localStorage.setItem('ino_metode_hpp_default', fd.get('hpp') as string);
         
         // Sinkronisasi ke server GAS
-        triggerToast('Menyimpan ke server database...', 'info');
+        triggerToast('Menyimpan ke server database...', 'success');
         try {
           await saveSettingsToGas([
             { key: 'login_username', value: email },
@@ -3651,6 +3653,21 @@ export default function App() {
           </button>
         </div>
       </header>
+
+      {/* ======================= */}
+      {/* MOBILE SUB-NAVIGATION   */}
+      {/* ======================= */}
+      <div className="md:hidden bg-slate-50 border-b border-border px-4 py-2 flex overflow-x-auto gap-2 [&::-webkit-scrollbar]:hidden" style={{ msOverflowStyle: 'none', scrollbarWidth: 'none' }}>
+        {visibleNavGroups.find(g => isGroupActive(g))?.children?.map(child => (
+          <button
+            key={child.id}
+            onClick={() => setActiveTab(child.id)}
+            className={`whitespace-nowrap px-3 py-1.5 rounded-full text-xs font-bold transition-colors ${activeTab === child.id ? 'bg-primary text-white' : 'bg-white text-secondary border border-border'}`}
+          >
+            {child.label}
+          </button>
+        ))}
+      </div>
 
       {/* ======================= */}
       {/* DESKTOP NAVIGATION BAR  */}
