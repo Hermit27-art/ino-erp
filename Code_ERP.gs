@@ -22,6 +22,91 @@ function doGet(e) {
     .addMetaTag('viewport', 'width=device-width, initial-scale=1');
 }
 
+// ============================================================
+// CANONICAL SCHEMA & AUDIT HEADERS (W0.3 / D4)
+// ============================================================
+const SCHEMA = {
+  "Products": ["sku", "kategori", "subKategori", "nama", "satuan", "hargaJual", "hpp", "safetyStock", "stok", "status", "supplierUtama", "lokasi", "masaSimpan", "catatan"],
+  "Customers": ["id", "nama", "kontak", "email", "telp", "alamat", "piutang"],
+  "Suppliers": ["id", "nama", "kontak", "email", "telp", "alamat", "hutang"],
+  "PurchaseOrders": ["id", "tanggal", "supplierId", "supplier", "metode", "subtotal", "diskon", "pajak", "grandTotal", "statusLogistik", "statusBayar", "totalPaid", "platform", "catatan", "dibuatOleh", "tanggalUpdate", "taxMode", "ppnStatus", "dpp", "ppnNilai", "isDirectPaid", "paidAt", "_hash"],
+  "PurchaseOrderItems": ["noPO", "sku", "nama", "qty", "qtyReceived", "qtyReturned", "satuan", "harga", "diskon", "ppn", "subtotal", "_hash"],
+  "SalesOrders": ["id", "tanggal", "customerId", "pelanggan", "metode", "subtotal", "diskon", "pajak", "grandTotal", "statusLogistik", "statusBayar", "totalPaid", "platform", "kasir", "catatan", "taxMode", "ppnStatus", "dpp", "ppnNilai", "voidedBy", "voidedAt", "voidAlasan", "_hash"],
+  "SalesOrderItems": ["noSO", "sku", "nama", "qty", "qtyShipped", "qtyReturned", "harga", "hpp", "diskon", "ppn", "subtotal", "_hash"],
+  "CashLedger": ["id", "tanggal", "ref", "keterangan", "kategori", "debit", "kredit", "saldo", "akun", "metode", "_hash"],
+  "InventoryLog": ["tanggal", "sku", "nama", "tipe", "qtySistem", "qtyFisik", "selisih", "satuan", "HPP", "subtotal", "catatan", "operator", "_hash"],
+  "Settings": ["key", "value"],
+  "Users": ["email", "nama", "role", "pin", "salt", "preHashHmac", "created_at", "updated_at"],
+  "CashAccounts": ["nomor", "nama", "jenis", "aktif"],
+  "PaymentMethods": ["id", "nama", "akun", "aktif"],
+  "VoidLog": ["id", "tanggal", "docType", "docId", "kasir", "nilai", "alasan", "timestamp", "_hash"],
+  "_AuditLog": ["id", "timestamp", "action", "sheet", "recordId", "user", "details", "_hash"],
+  "_Sessions": ["token", "username", "role", "nama", "created_at", "expires_at"],
+  "BOMs": ["id", "skuHasil", "namaHasil", "qtyHasil", "biayaLain", "bahanBakuJson"],
+  "Platforms": ["nama", "aktif"]
+};
+
+/**
+ * W0.3 — Audit statis & runtime header sheet live vs canonical SCHEMA.
+ * Fungsi baca-saja, tidak mengubah data apa pun di Spreadsheet.
+ */
+function auditSheetHeaders() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const report = {
+    timestamp: new Date().toISOString(),
+    missingSheets: [],
+    extraSheets: [],
+    sheetDetails: {}
+  };
+
+  const allSheets = ss.getSheets();
+  const existingSheetNames = allSheets.map(s => s.getName());
+
+  for (const sheetName in SCHEMA) {
+    const expectedHeaders = SCHEMA[sheetName];
+    const sheet = ss.getSheetByName(sheetName);
+
+    if (!sheet) {
+      report.missingSheets.push(sheetName);
+      report.sheetDetails[sheetName] = {
+        status: 'MISSING',
+        missingColumns: expectedHeaders,
+        extraColumns: [],
+        actualHeaders: [],
+        expectedHeaders: expectedHeaders
+      };
+      continue;
+    }
+
+    const lastCol = sheet.getLastColumn();
+    let actualHeaders = [];
+    if (lastCol > 0) {
+      actualHeaders = sheet.getRange(1, 1, 1, lastCol).getValues()[0].map(h => String(h || '').trim()).filter(Boolean);
+    }
+
+    const missingColumns = expectedHeaders.filter(h => actualHeaders.indexOf(h) === -1);
+    const extraColumns = actualHeaders.filter(h => expectedHeaders.indexOf(h) === -1);
+
+    report.sheetDetails[sheetName] = {
+      status: (missingColumns.length === 0 && extraColumns.length === 0) ? 'OK' : 'MISMATCH',
+      missingColumns: missingColumns,
+      extraColumns: extraColumns,
+      actualHeaders: actualHeaders,
+      expectedHeaders: expectedHeaders
+    };
+  }
+
+  for (const name of existingSheetNames) {
+    if (!SCHEMA[name] && !name.startsWith('_Backup_')) {
+      report.extraSheets.push(name);
+    }
+  }
+
+  Logger.log("=== HASIL AUDIT HEADER SPREADSHEET (W0.3) ===");
+  Logger.log(JSON.stringify(report, null, 2));
+  return report;
+}
+
 // ----------------------------------------------------
 // SESSION MANAGEMENT
 // ----------------------------------------------------
