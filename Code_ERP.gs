@@ -660,7 +660,7 @@ function sendEmailReport(token, to, subject, htmlBody) {
 // ----------------------------------------------------
 
 // Convert array of rows (with headers in row 0) to array of objects
-function rowsToObjects(rows) {
+function rowsToObjects_(rows) {
   if (!rows || rows.length <= 1) return [];
   const headers = rows[0];
   const data = [];
@@ -679,7 +679,7 @@ function rowsToObjects(rows) {
 }
 
 // Normalize known numeric fields to Number type safely
-function parseNumbers(obj) {
+function parseNumbers_(obj) {
   const numFields = [
     'hargaJual', 'hpp', 'safetyStock', 'stok', 'piutang', 'hutang',
     'qtyReceived', 'qtySold', 'qtyReturned', 'harga', 'komisiPct', 'subtotal',
@@ -689,7 +689,7 @@ function parseNumbers(obj) {
   ];
   
   if (Array.isArray(obj)) {
-    return obj.map(o => parseNumbers(o));
+    return obj.map(o => parseNumbers_(o));
   }
   if (obj && typeof obj === 'object') {
     const newObj = { ...obj };
@@ -710,18 +710,18 @@ function parseNumbers(obj) {
 }
 
 // Helper to get data mapped to object headers
-function getSheetData(sheetName) {
+function getSheetData_(sheetName) {
   const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheetName);
   if (!sheet) throw new Error("Sheet '" + sheetName + "' tidak ditemukan.");
   
   const values = sheet.getDataRange().getValues();
-  let objects = rowsToObjects(values);
-  objects = parseNumbers(objects);
+  let objects = rowsToObjects_(values);
+  objects = parseNumbers_(objects);
   return objects;
 }
 
 // Helper for generic save/upsert
-function saveItemToSheet(sheetName, item, pkField) {
+function saveItemToSheet_(sheetName, item, pkField) {
   const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheetName);
   if (!sheet) throw new Error("Sheet '" + sheetName + "' tidak ditemukan.");
   
@@ -729,7 +729,7 @@ function saveItemToSheet(sheetName, item, pkField) {
   if (values.length === 0) throw new Error("Sheet '" + sheetName + "' kosong, belum ada header.");
   
   const headers = values[0];
-  const writeItem = parseNumbers(item); // Ensure numbers are written explicitly
+  const writeItem = parseNumbers_(item); // Ensure numbers are written explicitly
   const rowData = headers.map(h => writeItem[h] === undefined ? "" : writeItem[h]);
   
   const pkIndex = headers.indexOf(pkField);
@@ -751,7 +751,7 @@ function saveItemToSheet(sheetName, item, pkField) {
 }
 
 // Helper for generic delete
-function deleteItemFromSheet(sheetName, id, pkField) {
+function deleteItemFromSheet_(sheetName, id, pkField) {
   const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheetName);
   if (!sheet) throw new Error("Sheet '" + sheetName + "' tidak ditemukan.");
   
@@ -774,7 +774,7 @@ function deleteItemFromSheet(sheetName, id, pkField) {
  * Helper to save whole bulk arrays (replaces all contents).
  * WRAPPED WITH LockService to prevent race condition on concurrent writes.
  */
-function saveAllToSheet(sheetName, items) {
+function saveAllToSheet_(sheetName, items) {
   const lock = LockService.getScriptLock();
   try {
     lock.waitLock(15000); // Wait up to 15 seconds for lock
@@ -798,7 +798,7 @@ function saveAllToSheet(sheetName, items) {
     
     if (items && items.length > 0) {
       const rows = items.map(item => {
-        const writeItem = parseNumbers(item);
+        const writeItem = parseNumbers_(item);
         return headers.map(h => writeItem[h] === undefined ? "" : writeItem[h]);
       });
       sheet.getRange(2, 1, rows.length, headers.length).setValues(rows);
@@ -814,7 +814,7 @@ function saveAllToSheet(sheetName, items) {
 function getProducts(token) {
   const user = requireAuth_(token);
   try {
-    const products = getSheetData('Products');
+    const products = getSheetData_('Products');
     if (user.role === 'Kasir') {
       return products.map(p => {
         const copy = { ...p };
@@ -831,17 +831,17 @@ function getProducts(token) {
 
 function saveProduct(token, product) {
   requireRole_(token, ['Admin', 'Superadmin']);
-  try { saveItemToSheet('Products', product, 'sku'); return true; } catch(e) { throw new Error(e.message); }
+  try { saveItemToSheet_('Products', product, 'sku'); return true; } catch(e) { throw new Error(e.message); }
 }
 
 function deleteProduct(token, sku) {
   requireRole_(token, ['Admin', 'Superadmin']);
-  try { deleteItemFromSheet('Products', sku, 'sku'); return true; } catch(e) { throw new Error(e.message); }
+  try { deleteItemFromSheet_('Products', sku, 'sku'); return true; } catch(e) { throw new Error(e.message); }
 }
 
 function saveAllProducts(token, products) {
   requireRole_(token, ['Superadmin']);
-  try { saveAllToSheet('Products', products); return true; } catch(e) { throw new Error(e.message); }
+  try { saveAllToSheet_('Products', products); return true; } catch(e) { throw new Error(e.message); }
 }
 
 // ----------------------------------------------------
@@ -850,7 +850,7 @@ function saveAllProducts(token, products) {
 function getCustomers(token) {
   const user = requireAuth_(token);
   try {
-    const customers = getSheetData('Customers');
+    const customers = getSheetData_('Customers');
     if (user.role === 'Kasir') {
       return customers.map(c => {
         const copy = { ...c };
@@ -866,17 +866,17 @@ function getCustomers(token) {
 
 function saveCustomer(token, customer) {
   requireRole_(token, ['Admin', 'Superadmin']);
-  try { saveItemToSheet('Customers', customer, 'id'); return true; } catch(e) { throw new Error(e.message); }
+  try { saveItemToSheet_('Customers', customer, 'id'); return true; } catch(e) { throw new Error(e.message); }
 }
 
 function deleteCustomer(token, id) {
   requireRole_(token, ['Admin', 'Superadmin']);
-  try { deleteItemFromSheet('Customers', id, 'id'); return true; } catch(e) { throw new Error(e.message); }
+  try { deleteItemFromSheet_('Customers', id, 'id'); return true; } catch(e) { throw new Error(e.message); }
 }
 
 function saveAllCustomers(token, customers) {
   requireRole_(token, ['Superadmin']);
-  try { saveAllToSheet('Customers', customers); return true; } catch(e) { throw new Error(e.message); }
+  try { saveAllToSheet_('Customers', customers); return true; } catch(e) { throw new Error(e.message); }
 }
 
 // ----------------------------------------------------
@@ -884,22 +884,22 @@ function saveAllCustomers(token, customers) {
 // ----------------------------------------------------
 function getSuppliers(token) {
   requireRole_(token, ['Admin', 'Superadmin']);
-  try { return getSheetData('Suppliers'); } catch(e) { throw new Error(e.message); }
+  try { return getSheetData_('Suppliers'); } catch(e) { throw new Error(e.message); }
 }
 
 function saveSupplier(token, supplier) {
   requireRole_(token, ['Admin', 'Superadmin']);
-  try { saveItemToSheet('Suppliers', supplier, 'id'); return true; } catch(e) { throw new Error(e.message); }
+  try { saveItemToSheet_('Suppliers', supplier, 'id'); return true; } catch(e) { throw new Error(e.message); }
 }
 
 function deleteSupplier(token, id) {
   requireRole_(token, ['Admin', 'Superadmin']);
-  try { deleteItemFromSheet('Suppliers', id, 'id'); return true; } catch(e) { throw new Error(e.message); }
+  try { deleteItemFromSheet_('Suppliers', id, 'id'); return true; } catch(e) { throw new Error(e.message); }
 }
 
 function saveAllSuppliers(token, suppliers) {
   requireRole_(token, ['Superadmin']);
-  try { saveAllToSheet('Suppliers', suppliers); return true; } catch(e) { throw new Error(e.message); }
+  try { saveAllToSheet_('Suppliers', suppliers); return true; } catch(e) { throw new Error(e.message); }
 }
 
 // ----------------------------------------------------
@@ -907,22 +907,22 @@ function saveAllSuppliers(token, suppliers) {
 // ----------------------------------------------------
 function getConsignments(token) {
   requireRole_(token, ['Admin', 'Superadmin']);
-  try { return getSheetData('Consignments'); } catch(e) { throw new Error(e.message); }
+  try { return getSheetData_('Consignments'); } catch(e) { throw new Error(e.message); }
 }
 
 function saveConsignment(token, consignment) {
   requireRole_(token, ['Admin', 'Superadmin']);
-  try { saveItemToSheet('Consignments', consignment, 'id'); return true; } catch(e) { throw new Error(e.message); }
+  try { saveItemToSheet_('Consignments', consignment, 'id'); return true; } catch(e) { throw new Error(e.message); }
 }
 
 function deleteConsignment(token, id) {
   requireRole_(token, ['Admin', 'Superadmin']);
-  try { deleteItemFromSheet('Consignments', id, 'id'); return true; } catch(e) { throw new Error(e.message); }
+  try { deleteItemFromSheet_('Consignments', id, 'id'); return true; } catch(e) { throw new Error(e.message); }
 }
 
 function saveAllConsignments(token, consignments) {
   requireRole_(token, ['Superadmin']);
-  try { saveAllToSheet('Consignments', consignments); return true; } catch(e) { throw new Error(e.message); }
+  try { saveAllToSheet_('Consignments', consignments); return true; } catch(e) { throw new Error(e.message); }
 }
 
 // ----------------------------------------------------
@@ -931,8 +931,8 @@ function saveAllConsignments(token, consignments) {
 function getPurchaseOrders(token) {
   requireRole_(token, ['Admin', 'Superadmin']);
   try {
-    const orders = getSheetData('PurchaseOrders');
-    const items = getSheetData('PurchaseOrderItems');
+    const orders = getSheetData_('PurchaseOrders');
+    const items = getSheetData_('PurchaseOrderItems');
     
     // Group items by noPO
     const itemsByPO = {};
@@ -965,7 +965,7 @@ function savePurchaseOrder(token, order) {
     // 1. Save Header
     const header = { ...order };
     delete header.items;
-    saveItemToSheet('PurchaseOrders', header, 'id');
+    saveItemToSheet_('PurchaseOrders', header, 'id');
     
     // 2. Refresh/Delete Old Items
     const itemsSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('PurchaseOrderItems');
@@ -990,7 +990,7 @@ function savePurchaseOrder(token, order) {
       
       const rowsToAppend = order.items.map(item => {
         const itemObj = { ...item, noPO: order.id };
-        const writeItem = parseNumbers(itemObj);
+        const writeItem = parseNumbers_(itemObj);
         return headers.map(h => writeItem[h] === undefined ? "" : writeItem[h]);
       });
       
@@ -1008,7 +1008,7 @@ function deletePurchaseOrder(token, id) {
   requireRole_(token, ['Admin', 'Superadmin']);
   try {
     // Delete header
-    deleteItemFromSheet('PurchaseOrders', id, 'id');
+    deleteItemFromSheet_('PurchaseOrders', id, 'id');
     
     // Delete items
     const itemsSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('PurchaseOrderItems');
@@ -1066,7 +1066,7 @@ function saveAllPurchaseOrders(token, orders) {
 }
 
 /**
- * Internal version of saveAllToSheet without its own lock (for use when caller already holds lock).
+ * Internal version of saveAllToSheet_ without its own lock (for use when caller already holds lock).
  */
 function saveAllToSheetRaw_(sheetName, items) {
   const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheetName);
@@ -1083,7 +1083,7 @@ function saveAllToSheetRaw_(sheetName, items) {
   
   if (items && items.length > 0) {
     const rows = items.map(item => {
-      const writeItem = parseNumbers(item);
+      const writeItem = parseNumbers_(item);
       return headers.map(h => writeItem[h] === undefined ? "" : writeItem[h]);
     });
     sheet.getRange(2, 1, rows.length, headers.length).setValues(rows);
@@ -1096,8 +1096,8 @@ function saveAllToSheetRaw_(sheetName, items) {
 function getSalesOrders(token) {
   const user = requireAuth_(token);
   try {
-    const orders = getSheetData('SalesOrders');
-    const items = getSheetData('SalesOrderItems');
+    const orders = getSheetData_('SalesOrders');
+    const items = getSheetData_('SalesOrderItems');
     
     const itemsBySO = {};
     for (const item of items) {
@@ -1138,7 +1138,7 @@ function saveSalesOrder(token, order) {
   try {
     const header = { ...order };
     delete header.items;
-    saveItemToSheet('SalesOrders', header, 'id');
+    saveItemToSheet_('SalesOrders', header, 'id');
     
     const itemsSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('SalesOrderItems');
     if (!itemsSheet) throw new Error("Sheet 'SalesOrderItems' tidak ditemukan.");
@@ -1161,7 +1161,7 @@ function saveSalesOrder(token, order) {
       
       const rowsToAppend = order.items.map(item => {
         const itemObj = { ...item, noSO: order.id };
-        const writeItem = parseNumbers(itemObj);
+        const writeItem = parseNumbers_(itemObj);
         return headers.map(h => writeItem[h] === undefined ? "" : writeItem[h]);
       });
       
@@ -1178,7 +1178,7 @@ function saveSalesOrder(token, order) {
 function deleteSalesOrder(token, id) {
   requireRole_(token, ['Admin', 'Superadmin']);
   try {
-    deleteItemFromSheet('SalesOrders', id, 'id');
+    deleteItemFromSheet_('SalesOrders', id, 'id');
     
     const itemsSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('SalesOrderItems');
     if (itemsSheet) {
@@ -1239,22 +1239,22 @@ function saveAllSalesOrders(token, orders) {
 // ----------------------------------------------------
 function getCashLedger(token) {
   requireRole_(token, ['Admin', 'Superadmin']);
-  try { return getSheetData('CashLedger'); } catch(e) { throw new Error(e.message); }
+  try { return getSheetData_('CashLedger'); } catch(e) { throw new Error(e.message); }
 }
 
 function saveCashEntry(token, entry) {
   requireRole_(token, ['Admin', 'Superadmin']);
-  try { saveItemToSheet('CashLedger', entry, 'id'); return true; } catch(e) { throw new Error(e.message); }
+  try { saveItemToSheet_('CashLedger', entry, 'id'); return true; } catch(e) { throw new Error(e.message); }
 }
 
 function deleteCashEntry(token, id) {
   requireRole_(token, ['Admin', 'Superadmin']);
-  try { deleteItemFromSheet('CashLedger', id, 'id'); return true; } catch(e) { throw new Error(e.message); }
+  try { deleteItemFromSheet_('CashLedger', id, 'id'); return true; } catch(e) { throw new Error(e.message); }
 }
 
 function saveAllCashLedger(token, ledger) {
   requireRole_(token, ['Superadmin']);
-  try { saveAllToSheet('CashLedger', ledger); return true; } catch(e) { throw new Error(e.message); }
+  try { saveAllToSheet_('CashLedger', ledger); return true; } catch(e) { throw new Error(e.message); }
 }
 
 // ----------------------------------------------------
@@ -1262,7 +1262,7 @@ function saveAllCashLedger(token, ledger) {
 // ----------------------------------------------------
 function getOpnameLog(token) {
   requireRole_(token, ['Admin', 'Superadmin']);
-  try { return getSheetData('InventoryLog'); } catch(e) { throw new Error(e.message); }
+  try { return getSheetData_('InventoryLog'); } catch(e) { throw new Error(e.message); }
 }
 
 function appendOpnameLog(token, logEntry) {
@@ -1275,7 +1275,7 @@ function appendOpnameLog(token, logEntry) {
     if (values.length === 0) throw new Error("Sheet 'InventoryLog' kosong, belum ada header.");
     
     const headers = values[0];
-    const writeItem = parseNumbers(logEntry);
+    const writeItem = parseNumbers_(logEntry);
     const rowData = headers.map(h => writeItem[h] === undefined ? "" : writeItem[h]);
     
     sheet.appendRow(rowData);
@@ -1287,7 +1287,7 @@ function appendOpnameLog(token, logEntry) {
 
 function saveAllOpnameLog(token, logs) {
   requireRole_(token, ['Superadmin']);
-  try { saveAllToSheet('InventoryLog', logs); return true; } catch(e) { throw new Error(e.message); }
+  try { saveAllToSheet_('InventoryLog', logs); return true; } catch(e) { throw new Error(e.message); }
 }
 
 // ==========================================
@@ -1308,7 +1308,7 @@ const SETTINGS_WHITELIST = [
 function getAppSettings(token) {
   requireAuth_(token);
   try {
-    const rawData = getSheetData('Settings');
+    const rawData = getSheetData_('Settings');
     return rawData.filter(item => SETTINGS_WHITELIST.includes(item.key));
   } catch(e) {
     throw new Error(e.message);
