@@ -502,7 +502,14 @@ export default function App() {
   ]));
 
   // S5: Hapus default hardcoded PINs
-  const [settingUsersList, setSettingUsersList] = useState<any[]>(() => getLocalStorage('ino_setting_users', []));
+  // R12: Pada mode GAS jangan simpan daftar user ke localStorage
+  const [settingUsersList, setSettingUsersList] = useState<any[]>(() => {
+    if (isGasEnv_) {
+      try { localStorage.removeItem('ino_setting_users'); } catch (_) {}
+      return [];
+    }
+    return getLocalStorage('ino_setting_users', []);
+  });
 
   const [settingSubTab, setSettingSubTab] = useState<string>('profil');
 
@@ -590,7 +597,10 @@ export default function App() {
   useEffect(() => { setLocalStorage('ino_setting_cash_accounts', settingCashAccounts); }, [settingCashAccounts]);
   useEffect(() => { setLocalStorage('ino_setting_platforms', settingPlatforms); }, [settingPlatforms]);
   useEffect(() => { setLocalStorage('ino_setting_prefixes', settingPrefixes); }, [settingPrefixes]);
-  useEffect(() => { setLocalStorage('ino_setting_users', settingUsersList); }, [settingUsersList]);
+  useEffect(() => {
+    // R12: Pada mode GAS jangan simpan daftar user ke localStorage
+    if (!isGasEnv_) setLocalStorage('ino_setting_users', settingUsersList);
+  }, [settingUsersList]);
   useEffect(() => { setLocalStorage('ino_boms', boms); }, [boms]);
   useEffect(() => { setLocalStorage('ino_riwayat_produksi', riwayatProduksi); }, [riwayatProduksi]);
   useEffect(() => { setLocalStorage('ino_stok_prices', stokPrices); }, [stokPrices]);
@@ -600,6 +610,7 @@ export default function App() {
   // Catatan: Hashing ini terjadi di sisi klien dan hanya sebagai pengamanan dasar.
   // Jika password di localStorage belum di-hash (panjang bukan 64), kita hash.
   useEffect(() => {
+    if (isGasEnv_) return; // R12: Pada mode GAS, autentikasi sepenuhnya diatur oleh server GAS
     const migratePasswords = async () => {
       const storedSuperPass = getLocalStorage('ino_login_password', '');
       if (storedSuperPass && !(storedSuperPass.length === 64 && /^[0-9a-f]{64}$/i.test(storedSuperPass))) {

@@ -500,6 +500,8 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({
                     for (const u of settingUsersList) {
                       if (u.email) await saveUserToGas(u);
                     }
+                    // R12: kosongkan pin dari state setelah saveUser berhasil
+                    setSettingUsersList(settingUsersList.map(({ pin: _pin, ...rest }) => rest));
                   }
                   triggerToast('Pengaturan disinkronkan ke semua perangkat!', 'success');
                 } catch(e: any) {
