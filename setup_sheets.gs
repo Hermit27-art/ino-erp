@@ -2,26 +2,8 @@
 // INO ERP — Setup & Migrasi Schema Google Sheets (Idempoten)
 // ============================================================
 
-const SCHEMA = {
-  "Products": ["sku", "kategori", "subKategori", "nama", "satuan", "hargaJual", "hpp", "safetyStock", "stok", "status", "supplierUtama", "lokasi", "masaSimpan", "catatan"],
-  "Customers": ["id", "nama", "kontak", "email", "telp", "alamat", "piutang"],
-  "Suppliers": ["id", "nama", "kontak", "email", "telp", "alamat", "hutang"],
-  "PurchaseOrders": ["id", "tanggal", "supplierId", "supplier", "metode", "subtotal", "diskon", "pajak", "grandTotal", "statusLogistik", "statusBayar", "totalPaid", "platform", "catatan", "dibuatOleh", "tanggalUpdate", "taxMode", "ppnStatus", "dpp", "ppnNilai", "isDirectPaid", "paidAt", "_hash"],
-  "PurchaseOrderItems": ["noPO", "sku", "nama", "qty", "qtyReceived", "qtyReturned", "satuan", "harga", "diskon", "ppn", "subtotal", "_hash"],
-  "SalesOrders": ["id", "tanggal", "customerId", "pelanggan", "metode", "subtotal", "diskon", "pajak", "grandTotal", "statusLogistik", "statusBayar", "totalPaid", "platform", "kasir", "catatan", "taxMode", "ppnStatus", "dpp", "ppnNilai", "voidedBy", "voidedAt", "voidAlasan", "_hash"],
-  "SalesOrderItems": ["noSO", "sku", "nama", "qty", "qtyShipped", "qtyReturned", "harga", "hpp", "diskon", "ppn", "subtotal", "_hash"],
-  "CashLedger": ["id", "tanggal", "ref", "keterangan", "kategori", "debit", "kredit", "saldo", "akun", "metode", "_hash"],
-  "InventoryLog": ["tanggal", "sku", "nama", "tipe", "qtySistem", "qtyFisik", "selisih", "satuan", "HPP", "subtotal", "catatan", "operator", "_hash"],
-  "Settings": ["key", "value"],
-  "Users": ["email", "nama", "role", "pin", "salt", "preHashHmac", "created_at", "updated_at"],
-  "CashAccounts": ["nomor", "nama", "jenis", "aktif"],
-  "PaymentMethods": ["id", "nama", "akun", "aktif"],
-  "VoidLog": ["id", "tanggal", "docType", "docId", "kasir", "nilai", "alasan", "timestamp", "_hash"],
-  "_AuditLog": ["id", "timestamp", "action", "sheet", "recordId", "user", "details", "_hash"],
-  "_Sessions": ["token", "username", "role", "nama", "created_at", "expires_at"],
-  "BOMs": ["id", "skuHasil", "namaHasil", "qtyHasil", "biayaLain", "bahanBakuJson"],
-  "Platforms": ["nama", "aktif"]
-};
+// ponytail: R1 - SCHEMA didefinisikan secara kanonikal di Code_ERP.gs.
+// Semua file .gs berbagi satu scope global di Google Apps Script.
 
 function setupSheetsAndHeaders() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
