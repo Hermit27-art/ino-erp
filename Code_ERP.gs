@@ -5,7 +5,7 @@
 // - Tambah session-based auth (login → token → validate per request)
 // - Tambah LockService untuk prevent race condition pada bulk writes
 // - Semua mutation endpoint sekarang memerlukan valid session token
-// - Read endpoints tetap terbuka (GET) untuk compatibility
+// - Read endpoints diproteksi dengan session token (requireAuth_ / requireRole_)
 // ============================================================
 
 function doGet(e) {
@@ -13,8 +13,7 @@ function doGet(e) {
     return HtmlService.createTemplateFromFile('index_POS')
       .evaluate()
       .setTitle('INO POS')
-      .addMetaTag('viewport', 'width=device-width, initial-scale=1')
-      .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
+      .addMetaTag('viewport', 'width=device-width, initial-scale=1');
   }
   
   return HtmlService.createHtmlOutputFromFile('index')
@@ -557,6 +556,12 @@ function saveUser(token, userData) {
   requireRole_(token, ['Superadmin']);
   if (!userData || !userData.email) throw new Error('Email user wajib diisi.');
 
+  const ALLOWED_ROLES = ['Superadmin', 'Admin', 'Kasir'];
+  const role = String(userData.role || 'Kasir');
+  if (!ALLOWED_ROLES.includes(role)) {
+    throw new Error('Role tidak valid. Role yang diizinkan: ' + ALLOWED_ROLES.join(', '));
+  }
+
   const lock = LockService.getScriptLock();
   lock.waitLock(15000);
 
@@ -570,24 +575,43 @@ function saveUser(token, userData) {
 
     const email = String(userData.email).trim().toLowerCase();
     const nama = String(userData.nama || '');
-    const role = String(userData.role || 'Kasir');
     const uData = uSheet.getDataRange().getValues();
+    const headers = uData[0];
+    const roleCol = headers.indexOf('role') !== -1 ? headers.indexOf('role') : 2;
     const now = new Date();
 
+    // Hitung jumlah Superadmin & cek user yang ada untuk mencegah demosi Superadmin terakhir
+    let superadminCount = 0;
+    let existingUserRole = '';
+    let existingRowIdx = -1;
     for (let i = 1; i < uData.length; i++) {
-      if (String(uData[i][0] || '').toLowerCase() === email) {
-        // Update user
-        let salt = String(uData[i][4] || '');
-        let hmac = String(uData[i][5] || '');
-        if (userData.pin) {
-          salt = Utilities.getUuid();
-          hmac = computeHmac_(salt, userData.pin);
-        }
-        uSheet.getRange(i + 1, 1, 1, 8).setValues([[
-          email, nama, role, '', salt, hmac, uData[i][6] || now, now
-        ]]);
-        return { ok: true, message: 'User diperbarui.' };
+      const rEmail = String(uData[i][0] || '').trim().toLowerCase();
+      const rRole = String(uData[i][roleCol] || '');
+      if (rRole === 'Superadmin') {
+        superadminCount++;
       }
+      if (rEmail === email) {
+        existingUserRole = rRole;
+        existingRowIdx = i;
+      }
+    }
+
+    if (existingRowIdx !== -1) {
+      if (existingUserRole === 'Superadmin' && role !== 'Superadmin' && superadminCount <= 1) {
+        throw new Error('Operasi ditolak: Tidak dapat menurunkan role Superadmin terakhir.');
+      }
+
+      // Update user
+      let salt = String(uData[existingRowIdx][4] || '');
+      let hmac = String(uData[existingRowIdx][5] || '');
+      if (userData.pin) {
+        salt = Utilities.getUuid();
+        hmac = computeHmac_(salt, userData.pin);
+      }
+      uSheet.getRange(existingRowIdx + 1, 1, 1, 8).setValues([[
+        email, nama, role, '', salt, hmac, uData[existingRowIdx][6] || now, now
+      ]]);
+      return { ok: true, message: 'User diperbarui.' };
     }
 
     // Insert user baru
@@ -602,7 +626,7 @@ function saveUser(token, userData) {
 }
 
 /**
- * Hapus user (Superadmin only). Tidak boleh menghapus akun sendiri.
+ * Hapus user (Superadmin only). Tidak boleh menghapus akun sendiri atau Superadmin terakhir.
  */
 function deleteUser(token, emailToDelete) {
   const current = requireRole_(token, ['Superadmin']);
@@ -611,18 +635,47 @@ function deleteUser(token, emailToDelete) {
     throw new Error('Tidak dapat menghapus akun Anda sendiri.');
   }
 
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const uSheet = ss.getSheetByName(USERS_SHEET);
-  if (!uSheet || uSheet.getLastRow() <= 1) return { ok: true };
+  const lock = LockService.getScriptLock();
+  lock.waitLock(15000);
 
-  const data = uSheet.getDataRange().getValues();
-  for (let i = data.length - 1; i >= 1; i--) {
-    if (String(data[i][0] || '').toLowerCase() === cleanEmail) {
-      uSheet.deleteRow(i + 1);
-      return { ok: true, message: 'User berhasil dihapus.' };
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const uSheet = ss.getSheetByName(USERS_SHEET);
+    if (!uSheet || uSheet.getLastRow() <= 1) return { ok: true };
+
+    const data = uSheet.getDataRange().getValues();
+    const headers = data[0];
+    const roleCol = headers.indexOf('role') !== -1 ? headers.indexOf('role') : 2;
+
+    let superadminCount = 0;
+    let targetRole = '';
+    let targetRowIndex = -1;
+
+    for (let i = 1; i < data.length; i++) {
+      const email = String(data[i][0] || '').trim().toLowerCase();
+      const role = String(data[i][roleCol] || '');
+      if (role === 'Superadmin') {
+        superadminCount++;
+      }
+      if (email === cleanEmail) {
+        targetRole = role;
+        targetRowIndex = i + 1;
+      }
     }
+
+    if (targetRowIndex === -1) {
+      return { ok: true };
+    }
+
+    if (targetRole === 'Superadmin' && superadminCount <= 1) {
+      throw new Error('Operasi ditolak: Tidak dapat menghapus Superadmin terakhir.');
+    }
+
+    uSheet.deleteRow(targetRowIndex);
+    return { ok: true, message: 'User berhasil dihapus.' };
+  } finally {
+    lock.releaseLock();
   }
-  return { ok: true };
 }
 
 /**
@@ -632,22 +685,29 @@ function resetPin(token, email, newPreHash) {
   requireRole_(token, ['Superadmin']);
   if (!email || !newPreHash) throw new Error('Email dan password baru wajib diisi.');
 
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const uSheet = ss.getSheetByName(USERS_SHEET);
-  if (!uSheet) throw new Error('Sheet Users tidak ditemukan.');
+  const lock = LockService.getScriptLock();
+  lock.waitLock(15000);
 
-  const data = uSheet.getDataRange().getValues();
-  const cleanEmail = String(email).trim().toLowerCase();
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const uSheet = ss.getSheetByName(USERS_SHEET);
+    if (!uSheet) throw new Error('Sheet Users tidak ditemukan.');
 
-  for (let i = 1; i < data.length; i++) {
-    if (String(data[i][0] || '').toLowerCase() === cleanEmail) {
-      const salt = Utilities.getUuid();
-      const hmac = computeHmac_(salt, newPreHash);
-      uSheet.getRange(i + 1, 4, 1, 5).setValues([['', salt, hmac, data[i][6], new Date()]]);
-      return { ok: true, message: 'Password user berhasil direset.' };
+    const data = uSheet.getDataRange().getValues();
+    const cleanEmail = String(email).trim().toLowerCase();
+
+    for (let i = 1; i < data.length; i++) {
+      if (String(data[i][0] || '').toLowerCase() === cleanEmail) {
+        const salt = Utilities.getUuid();
+        const hmac = computeHmac_(salt, newPreHash);
+        uSheet.getRange(i + 1, 4, 1, 5).setValues([['', salt, hmac, data[i][6], new Date()]]);
+        return { ok: true, message: 'Password user berhasil direset.' };
+      }
     }
+    throw new Error('User tidak ditemukan.');
+  } finally {
+    lock.releaseLock();
   }
-  throw new Error('User tidak ditemukan.');
 }
 
 /**
@@ -1795,26 +1855,6 @@ function appendRowFromObject_(sheet, obj) {
   sheet.appendRow(row);
 }
 
-function decrementStock_(prodSheet, sku, qty) {
-  const data = prodSheet.getDataRange().getValues();
-  const headers = data[0];
-  const skuCol = headers.indexOf('sku');
-  const stokCol = headers.indexOf('stok');
-  if (skuCol === -1 || stokCol === -1) return;
-
-  for (let i = 1; i < data.length; i++) {
-    if (String(data[i][skuCol]).trim() === String(sku).trim()) {
-      const currentStok = Number(data[i][stokCol]) || 0;
-      if (currentStok < qty) {
-        throw new Error('STOK_TIDAK_CUKUP: Stok untuk SKU ' + sku + ' tidak mencukupi (sisa: ' + currentStok + ', diminta: ' + qty + ').');
-      }
-      prodSheet.getRange(i + 1, stokCol + 1).setValue(currentStok - qty);
-      return;
-    }
-  }
-  throw new Error('PRODUK_TIDAK_DITEMUKAN: SKU ' + sku + ' tidak ditemukan.');
-}
-
 function getLastSaldoForAkun_(cashSheet, akun) {
   const data = cashSheet.getDataRange().getValues();
   if (data.length < 2) return 0;
@@ -1831,25 +1871,6 @@ function getLastSaldoForAkun_(cashSheet, akun) {
     }
   }
   return lastSaldo;
-}
-
-function saveProduct_(product) {
-  // Placeholder untuk endpoint ERP nanti (Prioritas 1). Belum dipakai POS.
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const sheet = ss.getSheetByName(SHEET_PRODUCTS);
-  const data = sheet.getDataRange().getValues();
-  const headers = data[0];
-  const skuCol = headers.indexOf('sku');
-
-  for (let i = 1; i < data.length; i++) {
-    if (data[i][skuCol] === product.sku) {
-      const row = headers.map(h => product[h] !== undefined ? product[h] : data[i][headers.indexOf(h)]);
-      sheet.getRange(i + 1, 1, 1, row.length).setValues([row]);
-      return { updated: true };
-    }
-  }
-  appendRowFromObject_(sheet, product);
-  return { inserted: true };
 }
 
 // ==========================================
@@ -1918,21 +1939,7 @@ function resetSemuaData() {
   Logger.log('=== RESET TOTAL BERHASIL DISELESAIKAN ===');
 }
 
-// ==========================================
-// KEAMANAN (nonaktif dulu, aktifkan sebelum go-live)
-// ==========================================
 
-/**
- * Contoh pengecekan token sederhana untuk doPost, BELUM diaktifkan.
- * Untuk mengaktifkan: panggil checkApiToken_(body.token) di awal doPost(),
- * dan simpan token rahasia di Script Properties (bukan hardcode di kode).
- */
-function checkApiToken_(token) {
-  const validToken = PropertiesService.getScriptProperties().getProperty('API_TOKEN');
-  if (token !== validToken) {
-    throw new Error('Token API tidak valid.');
-  }
-}
 
 // ==========================================
 // FUNGSI DASHBOARD POS
