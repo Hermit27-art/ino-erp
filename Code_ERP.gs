@@ -1439,16 +1439,47 @@ function getCustomerList(token) {
 }
 
 /**
- * Riwayat transaksi POS hari ini saja (S3).
+ * Riwayat transaksi POS hari ini saja (S3 & R11).
+ * Menggabungkan detail items dari sheet SalesOrderItems (bukan hanya kolom header legacy).
  */
 function getRiwayatHariIni(token) {
-  requireAuth_(token);
+  const user = requireAuth_(token);
   const semua = getSheetDataAsObjects_(SHEET_SALES_ORDERS);
   const today = formatDate_(new Date());
 
-  return semua
+  const hariIni = semua
     .filter(so => String(so.id).indexOf('POS-') === 0 && so.tanggal === today)
     .sort((a, b) => String(b.id).localeCompare(String(a.id))); // terbaru dulu
+
+  if (hariIni.length === 0) return [];
+
+  // R11: Gabungkan baris item dari SalesOrderItems
+  const orderIds = new Set(hariIni.map(so => String(so.id)));
+  const allItems = getSheetDataAsObjects_('SalesOrderItems');
+  const itemsBySO = {};
+  for (const item of allItems) {
+    const noSO = String(item.noSO || '');
+    if (orderIds.has(noSO)) {
+      if (!itemsBySO[noSO]) itemsBySO[noSO] = [];
+      itemsBySO[noSO].push(item);
+    }
+  }
+
+  for (const so of hariIni) {
+    if (itemsBySO[so.id] && itemsBySO[so.id].length > 0) {
+      so.items = itemsBySO[so.id];
+    } else if (so.items && typeof so.items === 'string' && so.items.startsWith('[')) {
+      try { so.items = JSON.parse(so.items); } catch(e) { so.items = []; }
+    } else if (!Array.isArray(so.items)) {
+      so.items = [];
+    }
+
+    if (user.role === 'Kasir') {
+      so.items.forEach(it => { delete it.hpp; });
+    }
+  }
+
+  return hariIni;
 }
 
 /**
@@ -1919,6 +1950,14 @@ function getRingkasanDashboard(token) {
   
   // 1. Hitung Omzet dan Transaksi Hari Ini
   const salesOrders = getSheetDataAsObjects_(SHEET_SALES_ORDERS);
+  const allItems = getSheetDataAsObjects_('SalesOrderItems');
+  const itemsBySO = {};
+  for (const item of allItems) {
+    const noSO = String(item.noSO || '');
+    if (!itemsBySO[noSO]) itemsBySO[noSO] = [];
+    itemsBySO[noSO].push(item);
+  }
+
   let omzetHariIni = 0;
   let jumlahTransaksiHariIni = 0;
   let salesLogs = [];
@@ -1933,12 +1972,18 @@ function getRingkasanDashboard(token) {
       const total = Number(so.grandTotal) || 0;
       omzetHariIni += total;
       
-      // Ambil detail items untuk format log
+      // R11: Ambil detail items dari SalesOrderItems (fallback ke JSON header jika legacy)
       let itemCount = 0;
-      try {
-        const items = typeof so.items === 'string' ? JSON.parse(so.items) : so.items;
-        itemCount = Array.isArray(items) ? items.length : 0;
-      } catch(e) {}
+      if (itemsBySO[so.id] && itemsBySO[so.id].length > 0) {
+        itemCount = itemsBySO[so.id].length;
+      } else if (so.items && typeof so.items === 'string' && so.items.startsWith('[')) {
+        try {
+          const parsed = JSON.parse(so.items);
+          itemCount = Array.isArray(parsed) ? parsed.length : 0;
+        } catch(e) {}
+      } else if (Array.isArray(so.items)) {
+        itemCount = so.items.length;
+      }
       
       salesLogs.push({
         struk: so.id,
