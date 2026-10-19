@@ -456,6 +456,7 @@ function initialSetup(payload) {
     }
 
     const email = String(payload.email).trim().toLowerCase();
+    const nama = String(payload.nama || 'Superadmin').trim();
     const salt = Utilities.getUuid();
     const hmac = computeHmac_(salt, payload.passwordHash);
     const now = new Date();
@@ -466,14 +467,14 @@ function initialSetup(payload) {
     for (let i = 1; i < uData.length; i++) {
       if (String(uData[i][0] || '').toLowerCase() === email) {
         uSheet.getRange(i + 1, 1, 1, 8).setValues([[
-          email, 'Superadmin', 'Superadmin', '', salt, hmac, uData[i][6] || now, now
+          email, nama, 'Superadmin', '', salt, hmac, uData[i][6] || now, now
         ]]);
         found = true;
         break;
       }
     }
     if (!found) {
-      uSheet.appendRow([email, 'Superadmin', 'Superadmin', '', salt, hmac, now, now]);
+      uSheet.appendRow([email, nama, 'Superadmin', '', salt, hmac, now, now]);
     }
 
     // Simpan public settings

@@ -3375,18 +3375,18 @@ export default function App() {
         triggerToast('Menyimpan ke server database...', 'success');
         try {
           const res = await initialSetup({
-            superadminEmail: email,
-            superadminPasswordHash: hashed,
-            superadminNama: 'Superadmin',
-            settings: {
-              nama_toko: fd.get('namaToko') as string,
-              tipe_bisnis: fd.get('tipeBisnis') as string,
-              alamat_toko: fd.get('alamat') as string,
-              telp_toko: fd.get('telp') as string,
-              mata_uang: fd.get('mataUang') as string,
-              ppn_rate: fd.get('ppn') as string,
-              metode_hpp_default: fd.get('hpp') as string
-            }
+            email,
+            passwordHash: hashed,
+            nama: 'Superadmin',
+            settings: [
+              { key: 'nama_toko', value: fd.get('namaToko') as string },
+              { key: 'tipe_bisnis', value: fd.get('tipeBisnis') as string },
+              { key: 'alamat_toko', value: fd.get('alamat') as string },
+              { key: 'telp_toko', value: fd.get('telp') as string },
+              { key: 'mata_uang', value: fd.get('mataUang') as string },
+              { key: 'ppn_rate', value: fd.get('ppn') as string },
+              { key: 'metode_hpp_default', value: fd.get('hpp') as string }
+            ]
           });
           if (!res.ok) {
             return triggerToast('Gagal setup: ' + res.message, 'error');

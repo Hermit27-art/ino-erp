@@ -482,7 +482,15 @@ export const getBootstrapStatus = async (): Promise<{ initialized: boolean; stor
   return { initialized: hasUser, storeName: localStorage.getItem('ino_nama_toko') || 'INO ERP' };
 };
 
-export const initialSetup = async (payload: any): Promise<{ ok: boolean; message: string }> => {
+export interface InitialSetupPayload {
+  email: string;
+  passwordHash: string;
+  nama: string;
+  settings: { key: string; value: string }[];
+  token?: string;
+}
+
+export const initialSetup = async (payload: InitialSetupPayload): Promise<{ ok: boolean; message: string }> => {
   if (isGasEnvironment()) {
     return runGasFunction('initialSetup', payload);
   }
