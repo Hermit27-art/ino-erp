@@ -19,7 +19,7 @@ import { getCustomers, saveCustomer, deleteCustomer, saveAllCustomers } from "./
 import { getSuppliers, saveSupplier, deleteSupplier, saveAllSuppliers } from "./dataService";
 import { getOpnameLog, appendOpnameLog, saveAllOpnameLog } from "./dataService";
 import { getCashLedger, saveCashEntry, deleteCashEntry, saveAllCashLedger } from "./dataService";
-import { getSalesOrders, saveSalesOrder, deleteSalesOrder, saveAllSalesOrders, fetchSettings, saveSettingsToGas } from './dataService';
+import { getSalesOrders, saveSalesOrder, deleteSalesOrder, saveAllSalesOrders, fetchSettings, saveSettingsToGas, getBootstrapStatus, initialSetup } from './dataService';
 import { getConsignments, saveConsignment, deleteConsignment, saveAllConsignments } from './dataService';
 import {
   ShoppingCart, LayoutDashboard,
@@ -188,7 +188,7 @@ function SpreadsheetComponent({ headers, rows, onChangeCell }: SpreadsheetCompon
       </div>
 
       {/* Grid Canvas */}
-      <div className="overflow-auto max-h-[420px]">
+      <div className="overflow-x-auto overflow-y-auto max-h-[420px] w-full">
         <table className="w-full border-collapse table-fixed min-w-[850px]">
           <thead>
             <tr className="bg-slate-100 text-secondary text-center select-none divide-x divide-gray-200">
@@ -373,6 +373,7 @@ const getTodayYMD = () => {
 };
 
 // ponytail: GAS environment check — login wajib aktif di production
+declare var google: any;
 const isGasEnv_ = typeof google !== 'undefined' && typeof (google as any)?.script !== 'undefined';
 
 export default function App() {
@@ -451,8 +452,10 @@ export default function App() {
   // Settings & Production States
   const [tipeBisnis, setTipeBisnis] = useState<string>(() => getLocalStorage('ino_tipe_bisnis', 'Manufaktur'));
   // ponytail: di GAS, login selalu wajib aktif — tidak boleh di-skip via localStorage
-  const [isLoginActive, setIsLoginActive] = useState<boolean>(() => isGasEnv_ ? true : getLocalStorage('ino_is_login_active', true));
+  // ponytail: di localhost paksa false agar bisa langsung masuk tanpa login saat testing
+  const [isLoginActive, setIsLoginActive] = useState<boolean>(() => isGasEnv_ ? true : false);
   const [isSetupMode, setIsSetupMode] = useState<boolean>(false);
+  const [isSystemInitialized, setIsSystemInitialized] = useState<boolean>(true);
   const [loginUsername, setLoginUsername] = useState<string>(() => getLocalStorage('ino_login_username', ''));
   const [loginPassword, setLoginPassword] = useState<string>(() => getLocalStorage('ino_login_password', ''));
 
@@ -498,10 +501,15 @@ export default function App() {
     { prefix: 'SVC', label: 'Service / Jasa' }
   ]));
 
-  const [settingUsersList, setSettingUsersList] = useState<any[]>(() => getLocalStorage('ino_setting_users', [
-    { email: 'admin@toko.com', nama: 'Administrator', role: 'Admin', pin: '1234' },
-    { email: 'kasir@toko.com', nama: 'Kasir 1', role: 'Kasir', pin: '5678' }
-  ]));
+  // S5: Hapus default hardcoded PINs
+  // R12: Pada mode GAS jangan simpan daftar user ke localStorage
+  const [settingUsersList, setSettingUsersList] = useState<any[]>(() => {
+    if (isGasEnv_) {
+      try { localStorage.removeItem('ino_setting_users'); } catch (_) {}
+      return [];
+    }
+    return getLocalStorage('ino_setting_users', []);
+  });
 
   const [settingSubTab, setSettingSubTab] = useState<string>('profil');
 
@@ -540,17 +548,19 @@ export default function App() {
   useEffect(() => {
     const syncSettingsFromGas = async () => {
       try {
+        const bootstrap = await getBootstrapStatus();
+        setIsSystemInitialized(bootstrap.initialized);
+
         const settings = await fetchSettings();
         if (settings && settings.length > 0) {
           settings.forEach(item => {
             const val = item.value;
             switch(item.key) {
-              case 'login_username': setLoginUsername(val); break;
-              case 'login_password': setLoginPassword(val); break;
               case 'nama_toko': setNamaToko(val); break;
               case 'tipe_bisnis': setTipeBisnis(val); break;
               case 'alamat_toko': setAlamatToko(val); break;
               case 'telp_toko': setTelpToko(val); break;
+              case 'kota_toko': setKotaToko(val); break;
               case 'mata_uang': setMataUang(val); break;
               case 'ppn_rate': setPpnRate(parseFloat(val) || 0.11); break;
               case 'metode_hpp_default': setMetodeHppDefault(val); break;
@@ -587,7 +597,10 @@ export default function App() {
   useEffect(() => { setLocalStorage('ino_setting_cash_accounts', settingCashAccounts); }, [settingCashAccounts]);
   useEffect(() => { setLocalStorage('ino_setting_platforms', settingPlatforms); }, [settingPlatforms]);
   useEffect(() => { setLocalStorage('ino_setting_prefixes', settingPrefixes); }, [settingPrefixes]);
-  useEffect(() => { setLocalStorage('ino_setting_users', settingUsersList); }, [settingUsersList]);
+  useEffect(() => {
+    // R12: Pada mode GAS jangan simpan daftar user ke localStorage
+    if (!isGasEnv_) setLocalStorage('ino_setting_users', settingUsersList);
+  }, [settingUsersList]);
   useEffect(() => { setLocalStorage('ino_boms', boms); }, [boms]);
   useEffect(() => { setLocalStorage('ino_riwayat_produksi', riwayatProduksi); }, [riwayatProduksi]);
   useEffect(() => { setLocalStorage('ino_stok_prices', stokPrices); }, [stokPrices]);
@@ -597,6 +610,7 @@ export default function App() {
   // Catatan: Hashing ini terjadi di sisi klien dan hanya sebagai pengamanan dasar.
   // Jika password di localStorage belum di-hash (panjang bukan 64), kita hash.
   useEffect(() => {
+    if (isGasEnv_) return; // R12: Pada mode GAS, autentikasi sepenuhnya diatur oleh server GAS
     const migratePasswords = async () => {
       const storedSuperPass = getLocalStorage('ino_login_password', '');
       if (storedSuperPass && !(storedSuperPass.length === 64 && /^[0-9a-f]{64}$/i.test(storedSuperPass))) {
@@ -3369,19 +3383,25 @@ export default function App() {
         localStorage.setItem('ino_metode_hpp_default', fd.get('hpp') as string);
         
         // Sinkronisasi ke server GAS
-        triggerToast('Menyimpan ke server database...', 'info');
+        triggerToast('Menyimpan ke server database...', 'success');
         try {
-          await saveSettingsToGas([
-            { key: 'login_username', value: email },
-            { key: 'login_password', value: hashed },
-            { key: 'nama_toko', value: fd.get('namaToko') as string },
-            { key: 'tipe_bisnis', value: fd.get('tipeBisnis') as string },
-            { key: 'alamat_toko', value: fd.get('alamat') as string },
-            { key: 'telp_toko', value: fd.get('telp') as string },
-            { key: 'mata_uang', value: fd.get('mataUang') as string },
-            { key: 'ppn_rate', value: fd.get('ppn') as string },
-            { key: 'metode_hpp_default', value: fd.get('hpp') as string }
-          ]);
+          const res = await initialSetup({
+            email,
+            passwordHash: hashed,
+            nama: 'Superadmin',
+            settings: [
+              { key: 'nama_toko', value: fd.get('namaToko') as string },
+              { key: 'tipe_bisnis', value: fd.get('tipeBisnis') as string },
+              { key: 'alamat_toko', value: fd.get('alamat') as string },
+              { key: 'telp_toko', value: fd.get('telp') as string },
+              { key: 'mata_uang', value: fd.get('mataUang') as string },
+              { key: 'ppn_rate', value: fd.get('ppn') as string },
+              { key: 'metode_hpp_default', value: fd.get('hpp') as string }
+            ]
+          });
+          if (!res.ok) {
+            return triggerToast('Gagal setup: ' + res.message, 'error');
+          }
           triggerToast('Setup Berhasil! Memuat ulang sistem...', 'success');
           setTimeout(() => window.location.reload(), 1500);
         } catch (error) {
@@ -3550,20 +3570,21 @@ export default function App() {
             >
               {isLoggingIn ? 'Memverifikasi...' : 'Masuk'}
             </button>
-            <div className="mt-4 pt-4 border-t border-gray-200">
-              <button
-                type="button"
-                onClick={() => {
-                  if (window.confirm('PERINGATAN: Tindakan ini akan menghapus seluruh pengaturan di memori browser ini dan membuka layar Setup. Anda yakin?')) {
-                    localStorage.clear();
-                    setIsSetupMode(true);
-                  }
-                }}
-                className="w-full flex justify-center py-2 px-4 border border-red-300 rounded-md shadow-sm text-sm font-medium text-red-600 bg-white hover:bg-red-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500"
-              >
-                Buat Perusahaan Baru (Reset & Setup)
-              </button>
-            </div>
+            {!isSystemInitialized && (
+              <div className="mt-4 pt-4 border-t border-gray-200">
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (window.confirm('PERINGATAN: Tindakan ini akan membuka layar Setup awal sistem. Anda yakin?')) {
+                      setIsSetupMode(true);
+                    }
+                  }}
+                  className="w-full flex justify-center py-2 px-4 border border-red-300 rounded-md shadow-sm text-sm font-medium text-red-600 bg-white hover:bg-red-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500"
+                >
+                  Buat Perusahaan Baru (Setup Awal)
+                </button>
+              </div>
+            )}
           </form>
         </div>
       </div>
@@ -3651,6 +3672,21 @@ export default function App() {
           </button>
         </div>
       </header>
+
+      {/* ======================= */}
+      {/* MOBILE SUB-NAVIGATION   */}
+      {/* ======================= */}
+      <div className="md:hidden bg-slate-50 border-b border-border px-4 py-2 flex overflow-x-auto gap-2 [&::-webkit-scrollbar]:hidden" style={{ msOverflowStyle: 'none', scrollbarWidth: 'none' }}>
+        {visibleNavGroups.find(g => isGroupActive(g))?.children?.map(child => (
+          <button
+            key={child.id}
+            onClick={() => setActiveTab(child.id)}
+            className={`whitespace-nowrap px-3 py-1.5 rounded-full text-xs font-bold transition-colors ${activeTab === child.id ? 'bg-primary text-white' : 'bg-white text-secondary border border-border'}`}
+          >
+            {child.label}
+          </button>
+        ))}
+      </div>
 
       {/* ======================= */}
       {/* DESKTOP NAVIGATION BAR  */}
@@ -6823,6 +6859,7 @@ export default function App() {
               loginUsername={loginUsername} setLoginUsername={setLoginUsername}
               loginPassword={loginPassword} setLoginPassword={setLoginPassword}
               settingUsersList={settingUsersList} setSettingUsersList={setSettingUsersList}
+              currentUser={currentUser}
               setIsLoggedIn={setIsLoggedIn}
               triggerToast={triggerToast}
             />

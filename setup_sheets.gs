@@ -1,46 +1,60 @@
+// ============================================================
+// INO ERP — Setup & Migrasi Schema Google Sheets (Idempoten)
+// ============================================================
+
+// ponytail: R1 - SCHEMA didefinisikan secara kanonikal di Code_ERP.gs.
+// Semua file .gs berbagi satu scope global di Google Apps Script.
+
 function setupSheetsAndHeaders() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
+  Logger.log("=== MEMULAI SETUP / MIGRASI SKEMA SPREADSHEET ===");
   
-  // Define the schema for sheets and their respective headers
-  const schema = {
-    "Products": ["sku", "kategori", "subKategori", "nama", "satuan", "hargaJual", "hpp", "safetyStock", "stok", "status", "supplierUtama", "lokasi", "masaSimpan", "catatan"],
-    "Customers": ["id", "nama", "kontak", "email", "telp", "alamat", "piutang"],
-    "Suppliers": ["id", "nama", "kontak", "email", "telp", "alamat", "hutang"],
-    "Consignments": ["id", "consignor", "tanggal", "sku", "nama", "qtyReceived", "qtySold", "qtyReturned", "harga", "komisiPct", "status", "catatan"],
-    "PurchaseOrders": ["id", "tanggal", "supplierId", "namaSupplier", "terminPembayaran", "jatuhTempo", "subtotal", "diskon", "ppn", "grandTotal", "statusLogistik", "statusPembayaran", "dibuatOleh", "tanggalUpdate", "catatan"],
-    "PurchaseOrderItems": ["noPO", "sku", "namaProduk", "qty", "qtyReceived", "satuan", "hargaBeli", "subtotal"],
-    "SalesOrders": ["id", "tanggal", "pelanggan", "metodePembayaran", "subtotal", "diskon", "pajak", "grandTotal", "statusLogistik", "statusPembayaran", "kasir", "catatan"],
-    "SalesOrderItems": ["noSO", "sku", "namaProduk", "qty", "hargaJual", "subtotal"],
-    "CashLedger": ["id", "tanggal", "ref", "keterangan", "kategori", "debit", "kredit", "saldo", "akun"],
-    "InventoryLog": ["tanggal", "sku", "nama", "tipe", "qtySistem", "qtyFisik", "selisih", "satuan", "HPP", "subtotal", "catatan", "operator"],
-    "Settings": ["key", "value"]
-  };
-  
-  // Iterate through the schema and setup each sheet
-  for (const sheetName in schema) {
+  for (const sheetName in SCHEMA) {
     let sheet = ss.getSheetByName(sheetName);
+    const expectedHeaders = SCHEMA[sheetName];
     
-    // 1. Create sheet if it doesn't exist
+    // 1. Buat sheet jika belum ada
     if (!sheet) {
       sheet = ss.insertSheet(sheetName);
-      Logger.log("Created new sheet: " + sheetName);
-    } else {
-      Logger.log("Sheet already exists: " + sheetName);
-    }
-    
-    // 2. Set headers on the first row
-    const headers = schema[sheetName];
-    if (headers && headers.length > 0) {
-      const range = sheet.getRange(1, 1, 1, headers.length);
-      range.setValues([headers]);
-      
-      // Optional: Bold the headers for better visibility and freeze the top row
+      if (sheetName.startsWith('_')) {
+        try { sheet.hideSheet(); } catch (e) {}
+      }
+      const range = sheet.getRange(1, 1, 1, expectedHeaders.length);
+      range.setValues([expectedHeaders]);
       range.setFontWeight("bold");
       sheet.setFrozenRows(1);
-      
-      Logger.log("-> Headers set for: " + sheetName);
+      Logger.log("✓ Sheet baru dibuat: " + sheetName + " (" + expectedHeaders.length + " kolom)");
+      continue;
+    }
+    
+    // 2. Jika sheet sudah ada, cek header eksisting (idempoten — jangan timpa data)
+    const lastCol = sheet.getLastColumn();
+    let currentHeaders = [];
+    if (lastCol > 0) {
+      currentHeaders = sheet.getRange(1, 1, 1, lastCol).getValues()[0].map(h => String(h || '').trim());
+    }
+    
+    if (currentHeaders.length === 0 || (currentHeaders.length === 1 && currentHeaders[0] === '')) {
+      // Baris 1 kosong, set header baru
+      const range = sheet.getRange(1, 1, 1, expectedHeaders.length);
+      range.setValues([expectedHeaders]);
+      range.setFontWeight("bold");
+      sheet.setFrozenRows(1);
+      Logger.log("✓ Header diisi untuk sheet kosong: " + sheetName);
+    } else {
+      // Cari kolom yang belum ada di sheet
+      const missingColumns = expectedHeaders.filter(h => currentHeaders.indexOf(h) === -1);
+      if (missingColumns.length > 0) {
+        const startCol = currentHeaders.length + 1;
+        const addRange = sheet.getRange(1, startCol, 1, missingColumns.length);
+        addRange.setValues([missingColumns]);
+        addRange.setFontWeight("bold");
+        Logger.log("✓ Menambahkan " + missingColumns.length + " kolom baru ke " + sheetName + ": " + missingColumns.join(', '));
+      } else {
+        Logger.log("✓ Skema sudah sesuai untuk: " + sheetName);
+      }
     }
   }
   
-  Logger.log("Setup complete! Semua tab dan header sudah berhasil dibuat.");
+  Logger.log("=== SETUP SELESAI: Seluruh tabel dan kolom telah diselaraskan tanpa kehilangan data ===");
 }

@@ -12,7 +12,7 @@ import { getSessionToken } from './authService';
 // GOOGLE APPS SCRIPT WRAPPER
 // ==========================================
 declare var google: any;
-const isGasEnvironment = () => typeof google !== 'undefined' && typeof google.script !== 'undefined';
+export const isGasEnvironment = () => typeof google !== 'undefined' && typeof google.script !== 'undefined';
 
 let activeGasRequests = 0;
 const startGasRequest = () => {
@@ -100,8 +100,9 @@ const mapReactToGasProduct = (p: any) => {
 
 export const getProducts = async (): Promise<any[]> => {
   if (isGasEnvironment()) {
-    const data = await runGasFunction('getProducts');
-    return data.map(mapGasToReactProduct);
+    const token = getSessionToken();
+    const data = await runGasFunction('getProducts', token);
+    return (data || []).map(mapGasToReactProduct);
   }
   return getLocalStorage('ino_products', []).map(mapGasToReactProduct);
 };
@@ -145,7 +146,11 @@ export const saveAllProducts = async (products: any[]): Promise<void> => {
 // PK: id
 // ==========================================
 export const getPurchaseOrders = async (): Promise<any[]> => {
-  if (isGasEnvironment()) return runGasFunction('getPurchaseOrders');
+  if (isGasEnvironment()) {
+    const token = getSessionToken();
+    const data = await runGasFunction('getPurchaseOrders', token);
+    return data || [];
+  }
   return getLocalStorage('ino_purchase_orders', []);
 };
 
@@ -188,7 +193,11 @@ export const saveAllPurchaseOrders = async (orders: any[]): Promise<void> => {
 // PK: id
 // ==========================================
 export const getSalesOrders = async (): Promise<any[]> => {
-  if (isGasEnvironment()) return runGasFunction('getSalesOrders');
+  if (isGasEnvironment()) {
+    const token = getSessionToken();
+    const data = await runGasFunction('getSalesOrders', token);
+    return data || [];
+  }
   return getLocalStorage('ino_sales_orders', []);
 };
 
@@ -231,7 +240,11 @@ export const saveAllSalesOrders = async (orders: any[]): Promise<void> => {
 // PK: id
 // ==========================================
 export const getCustomers = async (): Promise<any[]> => {
-  if (isGasEnvironment()) return runGasFunction('getCustomers');
+  if (isGasEnvironment()) {
+    const token = getSessionToken();
+    const data = await runGasFunction('getCustomers', token);
+    return data || [];
+  }
   return getLocalStorage('ino_customers', []);
 };
 
@@ -291,7 +304,11 @@ export const saveAllCustomers = async (customers: any[]): Promise<void> => {
 // PK: id
 // ==========================================
 export const getSuppliers = async (): Promise<any[]> => {
-  if (isGasEnvironment()) return runGasFunction('getSuppliers');
+  if (isGasEnvironment()) {
+    const token = getSessionToken();
+    const data = await runGasFunction('getSuppliers', token);
+    return data || [];
+  }
   return getLocalStorage('ino_suppliers', []);
 };
 
@@ -334,7 +351,11 @@ export const saveAllSuppliers = async (suppliers: any[]): Promise<void> => {
 // PK: id
 // ==========================================
 export const getConsignments = async (): Promise<any[]> => {
-  if (isGasEnvironment()) return runGasFunction('getConsignments');
+  if (isGasEnvironment()) {
+    const token = getSessionToken();
+    const data = await runGasFunction('getConsignments', token);
+    return data || [];
+  }
   return getLocalStorage('ino_consignments', []);
 };
 
@@ -376,7 +397,11 @@ export const saveAllConsignments = async (consignments: any[]): Promise<void> =>
 // OPNAME LOG / INVENTORY LOG
 // ==========================================
 export const getOpnameLog = async (): Promise<any[]> => {
-  if (isGasEnvironment()) return runGasFunction('getOpnameLog');
+  if (isGasEnvironment()) {
+    const token = getSessionToken();
+    const data = await runGasFunction('getOpnameLog', token);
+    return data || [];
+  }
   return getLocalStorage('ino_opname_log', []);
 };
 
@@ -404,7 +429,11 @@ export const saveAllOpnameLog = async (logs: any[]): Promise<void> => {
 // PK: id
 // ==========================================
 export const getCashLedger = async (): Promise<any[]> => {
-  if (isGasEnvironment()) return runGasFunction('getCashLedger');
+  if (isGasEnvironment()) {
+    const token = getSessionToken();
+    const data = await runGasFunction('getCashLedger', token);
+    return data || [];
+  }
   return getLocalStorage('ino_cash_ledger', []);
 };
 
@@ -442,19 +471,93 @@ export const saveAllCashLedger = async (ledger: any[]): Promise<void> => {
 };
 
 // ==========================================
-// SETTINGS
+// SETTINGS & BOOTSTRAP (S1)
 // ==========================================
+
+export const getBootstrapStatus = async (): Promise<{ initialized: boolean; storeName: string }> => {
+  if (isGasEnvironment()) {
+    return runGasFunction('getBootstrapStatus');
+  }
+  const hasUser = !!localStorage.getItem('ino_login_username');
+  return { initialized: hasUser, storeName: localStorage.getItem('ino_nama_toko') || 'INO ERP' };
+};
+
+export interface InitialSetupPayload {
+  email: string;
+  passwordHash: string;
+  nama: string;
+  settings: { key: string; value: string }[];
+  token?: string;
+}
+
+export const initialSetup = async (payload: InitialSetupPayload): Promise<{ ok: boolean; message: string }> => {
+  if (isGasEnvironment()) {
+    return runGasFunction('initialSetup', payload);
+  }
+  return { ok: true, message: 'Setup lokal selesai.' };
+};
 
 export const fetchSettings = async (): Promise<{ key: string, value: string }[]> => {
   if (isGasEnvironment()) {
-    return runGasFunction('getAppSettings');
+    const token = getSessionToken();
+    const data = await runGasFunction('getAppSettings', token);
+    return data || [];
   }
   return []; // Di local dev, rely on localStorage fallback
 };
 
 export const saveSettingsToGas = async (settingsList: { key: string, value: string }[]): Promise<void> => {
   if (isGasEnvironment()) {
-    return runGasFunction('saveAppSettings', settingsList);
+    const token = getSessionToken();
+    return runGasFunction('saveAppSettings', token, settingsList);
   }
   // Di local dev, Settings disimpan ke localStorage per key di App.tsx
+};
+
+// ==========================================
+// TEAM USER MANAGEMENT (S5)
+// ==========================================
+
+export const listUsersFromGas = async (): Promise<any[]> => {
+  if (isGasEnvironment()) {
+    const token = getSessionToken();
+    const data = await runGasFunction('listUsers', token);
+    return data || [];
+  }
+  return JSON.parse(localStorage.getItem('ino_setting_users') || '[]');
+};
+
+export const saveUserToGas = async (userData: any): Promise<{ ok: boolean; message: string }> => {
+  if (isGasEnvironment()) {
+    const token = getSessionToken();
+    return runGasFunction('saveUser', token, userData);
+  }
+  const users = JSON.parse(localStorage.getItem('ino_setting_users') || '[]');
+  const idx = users.findIndex((u: any) => u.email === userData.email);
+  if (idx !== -1) {
+    users[idx] = { ...users[idx], ...userData };
+  } else {
+    users.push(userData);
+  }
+  localStorage.setItem('ino_setting_users', JSON.stringify(users));
+  return { ok: true, message: 'User tersimpan.' };
+};
+
+export const deleteUserFromGas = async (email: string): Promise<{ ok: boolean; message: string }> => {
+  if (isGasEnvironment()) {
+    const token = getSessionToken();
+    return runGasFunction('deleteUser', token, email);
+  }
+  const users = JSON.parse(localStorage.getItem('ino_setting_users') || '[]');
+  const filtered = users.filter((u: any) => u.email !== email);
+  localStorage.setItem('ino_setting_users', JSON.stringify(filtered));
+  return { ok: true, message: 'User terhapus.' };
+};
+
+export const resetPinInGas = async (email: string, newPinHash: string): Promise<{ ok: boolean; message: string }> => {
+  if (isGasEnvironment()) {
+    const token = getSessionToken();
+    return runGasFunction('resetPin', token, email, newPinHash);
+  }
+  return { ok: true, message: 'PIN direset.' };
 };
