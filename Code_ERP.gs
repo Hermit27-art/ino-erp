@@ -120,11 +120,40 @@ const SHEET_SALES_ORDERS = 'SalesOrders';
 const SHEET_CASH_LEDGER = 'CashLedger';
 
 /**
+ * Mendapatkan atau menginisialisasi server-side pepper secara aman (R5).
+ * Jika Script Property AUTH_PEPPER belum diset, generate nilai acak unik sekali di bawah LockService,
+ * simpan di Script Properties, dan gunakan kembali. Tidak ada fallback hardcoded di kode.
+ */
+function getAuthPepper_() {
+  const props = PropertiesService.getScriptProperties();
+  let pepper = props.getProperty('AUTH_PEPPER');
+  if (pepper) return pepper;
+
+  const lock = LockService.getScriptLock();
+  try {
+    lock.waitLock(15000);
+  } catch (e) {
+    throw new Error('Server sibuk saat inisialisasi keamanan autentikasi.');
+  }
+
+  try {
+    pepper = props.getProperty('AUTH_PEPPER');
+    if (!pepper) {
+      pepper = Utilities.getUuid() + '-' + Utilities.getUuid();
+      props.setProperty('AUTH_PEPPER', pepper);
+    }
+    return pepper;
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/**
  * Komputasi HMAC-SHA256 untuk preHash password dari klien.
  * Menggunakan salt per-user dan server-side pepper dari Script Properties.
  */
 function computeHmac_(salt, preHash) {
-  const pepper = PropertiesService.getScriptProperties().getProperty('AUTH_PEPPER') || 'INO_ERP_PEPPER_2026_DEFAULT';
+  const pepper = getAuthPepper_();
   const message = String(salt) + ':' + String(preHash);
   const rawSignature = Utilities.computeHmacSha256Signature(message, pepper);
   return rawSignature.map(b => ('0' + (b & 0xFF).toString(16)).slice(-2)).join('');
