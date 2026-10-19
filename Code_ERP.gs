@@ -1476,9 +1476,8 @@ function simpanTransaksiPenjualan(payload) {
       }
     }
 
-    let serverGrandTotal = 0;
-    const verifiedItems = [];
-
+    // 1. Validasi produk, agregasi kuantitas per SKU & validasi stok total (R3)
+    const aggregatedQtyPerSku = {};
     for (const item of payload.items) {
       const sku = String(item.sku || '').trim();
       const p = productMap[sku];
@@ -1491,9 +1490,25 @@ function simpanTransaksiPenjualan(payload) {
         throw new Error('QTY_INVALID: Kuantitas untuk ' + p.nama + ' harus berupa angka positif.');
       }
 
-      if (p.stok < qty) {
-        throw new Error('STOK_TIDAK_CUKUP: Stok produk ' + p.nama + ' (' + sku + ') tidak mencukupi (sisa: ' + p.stok + ', diminta: ' + qty + ').');
+      aggregatedQtyPerSku[sku] = (aggregatedQtyPerSku[sku] || 0) + qty;
+    }
+
+    // Validasi stok agregat per SKU sebelum penulisan apa pun (R3)
+    for (const sku in aggregatedQtyPerSku) {
+      const totalQty = aggregatedQtyPerSku[sku];
+      const p = productMap[sku];
+      if (p.stok < totalQty) {
+        throw new Error('STOK_TIDAK_CUKUP: Total stok produk ' + p.nama + ' (' + sku + ') tidak mencukupi (sisa: ' + p.stok + ', total diminta: ' + totalQty + ').');
       }
+    }
+
+    let serverGrandTotal = 0;
+    const verifiedItems = [];
+
+    for (const item of payload.items) {
+      const sku = String(item.sku || '').trim();
+      const p = productMap[sku];
+      const qty = Number(item.qty);
 
       // Gunakan harga server (menolak pemalsuan total/harga dari klien)
       const hargaSatuan = p.hargaJual;
@@ -1507,9 +1522,7 @@ function simpanTransaksiPenjualan(payload) {
         qty: qty,
         hargaJual: hargaSatuan,
         hpp: p.hpp,
-        subtotal: subtotalItem,
-        rowNum: p.rowNum,
-        currentStok: p.stok
+        subtotal: subtotalItem
       });
     }
 
@@ -1614,10 +1627,12 @@ function simpanTransaksiPenjualan(payload) {
       }
     }
 
-    // 6. Kurangi stok di sheet Products secara presisi
-    verifiedItems.forEach(it => {
-      prodSheet.getRange(it.rowNum, stokIdx + 1).setValue(it.currentStok - it.qty);
-    });
+    // 6. Kurangi stok di sheet Products secara presisi (R3: sekali per SKU dengan total agregat)
+    for (const sku in aggregatedQtyPerSku) {
+      const p = productMap[sku];
+      const totalQty = aggregatedQtyPerSku[sku];
+      prodSheet.getRange(p.rowNum, stokIdx + 1).setValue(p.stok - totalQty);
+    }
 
     return { strukNo: strukNo, total: serverGrandTotal, timestamp: now.getTime() };
   } finally {
