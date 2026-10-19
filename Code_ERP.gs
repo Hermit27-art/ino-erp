@@ -108,20 +108,30 @@ function auditSheetHeaders() {
 }
 
 // ----------------------------------------------------
-// SESSION MANAGEMENT
+// SESSION & AUTH MANAGEMENT (S1, S4, S5)
 // ----------------------------------------------------
 const SESSION_SHEET = '_Sessions';
+const USERS_SHEET = 'Users';
 const SESSION_EXPIRY_HOURS = 24;
 
-// ponytail: dipakai fungsi-fungsi POS di bawah (getProdukList, simpanTransaksiPenjualan, dst),
-// sebelumnya dipakai tanpa didefinisikan -> ReferenceError saat POS jalan.
 const SHEET_PRODUCTS = 'Products';
 const SHEET_CUSTOMERS = 'Customers';
 const SHEET_SALES_ORDERS = 'SalesOrders';
 const SHEET_CASH_LEDGER = 'CashLedger';
 
 /**
- * Mendapatkan atau membuat sheet _Sessions untuk menyimpan token login.
+ * Komputasi HMAC-SHA256 untuk preHash password dari klien.
+ * Menggunakan salt per-user dan server-side pepper dari Script Properties.
+ */
+function computeHmac_(salt, preHash) {
+  const pepper = PropertiesService.getScriptProperties().getProperty('AUTH_PEPPER') || 'INO_ERP_PEPPER_2026_DEFAULT';
+  const message = String(salt) + ':' + String(preHash);
+  const rawSignature = Utilities.computeHmacSha256Signature(message, pepper);
+  return rawSignature.map(b => ('0' + (b & 0xFF).toString(16)).slice(-2)).join('');
+}
+
+/**
+ * Mendapatkan sheet _Sessions untuk menyimpan token login.
  */
 function getSessionSheet_() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -129,46 +139,151 @@ function getSessionSheet_() {
   if (!sh) {
     sh = ss.insertSheet(SESSION_SHEET);
     sh.appendRow(['token', 'username', 'role', 'nama', 'created_at', 'expires_at']);
-    // Hide session sheet from casual users
-    sh.hideSheet();
+    try { sh.hideSheet(); } catch (e) {}
   }
   return sh;
 }
 
 /**
- * Login — verifikasi username + password, kembalikan session token.
- * Password di-hash dengan SHA-256 di sisi klien sebelum dikirim.
- * Server membandingkan hash yang dikirim dengan hash tersimpan.
+ * Bersihkan sesi kedaluwarsa dari _Sessions.
  */
-function login(username, passwordHash) {
-  if (!username || !passwordHash) {
+function cleanupExpiredSessions_() {
+  try {
+    const sh = getSessionSheet_();
+    const data = sh.getDataRange().getValues();
+    if (data.length <= 1) return;
+    const now = new Date();
+    for (let i = data.length - 1; i >= 1; i--) {
+      const expires = new Date(data[i][5]);
+      if (isNaN(expires.getTime()) || now >= expires) {
+        sh.deleteRow(i + 1);
+      }
+    }
+  } catch (e) {
+    Logger.log('cleanupExpiredSessions_ warning: ' + e.message);
+  }
+}
+
+/**
+ * Validasi session token. Mengembalikan info user atau null jika invalid/expired.
+ */
+function validateToken_(token) {
+  if (!token) return null;
+  const sh = getSessionSheet_();
+  const data = sh.getDataRange().getValues();
+  const now = new Date();
+
+  for (let i = 1; i < data.length; i++) {
+    if (String(data[i][0]) === String(token)) {
+      const expires = new Date(data[i][5]);
+      if (now < expires) {
+        return {
+          username: String(data[i][1]),
+          role: String(data[i][2]),
+          nama: String(data[i][3])
+        };
+      } else {
+        sh.deleteRow(i + 1);
+        return null;
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Memastikan token valid. Melempar error UNAUTHORIZED jika tidak valid.
+ */
+function requireAuth_(token) {
+  const user = validateToken_(token);
+  if (!user) {
+    throw new Error('UNAUTHORIZED: Sesi tidak valid atau sudah kedaluwarsa. Silakan login kembali.');
+  }
+  return user;
+}
+
+/**
+ * Memastikan token valid dan memiliki peran yang diizinkan (S4 / DEC-10).
+ * allowedRoles: array string, misal ['Superadmin'], ['Admin', 'Superadmin'], ['Kasir', 'Admin', 'Superadmin']
+ */
+function requireRole_(token, allowedRoles) {
+  const user = requireAuth_(token);
+  if (!allowedRoles || !allowedRoles.includes(user.role)) {
+    throw new Error('FORBIDDEN: Peran \'' + user.role + '\' tidak memiliki izin untuk operasi ini.');
+  }
+  return user;
+}
+
+/**
+ * Login — verifikasi kredensial, proteksi brute-force dengan rate limit CacheService,
+ * upgrade otomatis password legacy ke HMAC-SHA256 ber-salt (S5).
+ */
+function login(username, preHash) {
+  if (!username || !preHash) {
     return { ok: false, error: 'Username dan password wajib diisi.' };
   }
 
+  const cleanUser = String(username).trim().toLowerCase();
+  const cache = CacheService.getScriptCache();
+  const rateLimitKey = 'login_fails_' + cleanUser;
+  const failAttempts = Number(cache.get(rateLimitKey) || 0);
+
+  // Rate limit: 5 gagal dalam 15 menit (900 detik)
+  if (failAttempts >= 5) {
+    return {
+      ok: false,
+      error: 'Terlalu banyak percobaan login gagal. Akun diblokir sementara selama 15 menit.'
+    };
+  }
+
+  cleanupExpiredSessions_();
   const ss = SpreadsheetApp.getActiveSpreadsheet();
 
-  // 1. Cek di sheet Users (team members)
-  const usersSheet = ss.getSheetByName('Users');
+  // 1. Periksa sheet Users
+  const usersSheet = ss.getSheetByName(USERS_SHEET);
   if (usersSheet) {
     const usersData = usersSheet.getDataRange().getValues();
     if (usersData.length > 1) {
       const headers = usersData[0];
       const emailIdx = headers.indexOf('email');
-      const pinIdx = headers.indexOf('pin');
       const namaIdx = headers.indexOf('nama');
       const roleIdx = headers.indexOf('role');
+      const pinIdx = headers.indexOf('pin');
+      const saltIdx = headers.indexOf('salt');
+      const hmacIdx = headers.indexOf('preHashHmac');
 
       for (let i = 1; i < usersData.length; i++) {
         const row = usersData[i];
         const storedEmail = String(row[emailIdx] || '').trim().toLowerCase();
-        const storedPin = String(row[pinIdx] || '').trim();
+        if (storedEmail !== cleanUser) continue;
 
-        if (storedEmail === String(username).trim().toLowerCase() && storedPin === passwordHash) {
-          // Match found — generate session token
+        let isMatch = false;
+        const storedSalt = saltIdx !== -1 ? String(row[saltIdx] || '').trim() : '';
+        const storedHmac = hmacIdx !== -1 ? String(row[hmacIdx] || '').trim() : '';
+        const storedPin = pinIdx !== -1 ? String(row[pinIdx] || '').trim() : '';
+
+        if (storedSalt && storedHmac) {
+          // Kredensial modern ber-salt + HMAC
+          const calculatedHmac = computeHmac_(storedSalt, preHash);
+          if (calculatedHmac === storedHmac) isMatch = true;
+        } else if (storedPin && storedPin === preHash) {
+          // Kredensial legacy — upgrade otomatis tanpa paksa reset password
+          isMatch = true;
+          const newSalt = Utilities.getUuid();
+          const newHmac = computeHmac_(newSalt, preHash);
+          if (saltIdx !== -1) usersSheet.getRange(i + 1, saltIdx + 1).setValue(newSalt);
+          if (hmacIdx !== -1) usersSheet.getRange(i + 1, hmacIdx + 1).setValue(newHmac);
+          if (pinIdx !== -1) usersSheet.getRange(i + 1, pinIdx + 1).setValue(''); // Hapus hash polos
+          const updatedIdx = headers.indexOf('updated_at');
+          if (updatedIdx !== -1) usersSheet.getRange(i + 1, updatedIdx + 1).setValue(new Date());
+          Logger.log('Upgraded legacy password for user: ' + cleanUser);
+        }
+
+        if (isMatch) {
+          cache.remove(rateLimitKey);
           const token = Utilities.getUuid();
           const now = new Date();
           const expires = new Date(now.getTime() + SESSION_EXPIRY_HOURS * 60 * 60 * 1000);
-
           const sessionSheet = getSessionSheet_();
           sessionSheet.appendRow([
             token,
@@ -193,103 +308,82 @@ function login(username, passwordHash) {
     }
   }
 
-  // 2. Cek superadmin dari Settings sheet (jika ada)
+  // 2. Cek Superadmin dari legacy Settings (jika belum dimigrasi ke Users)
   const settingsSheet = ss.getSheetByName('Settings');
   if (settingsSheet) {
-    const settingsData = settingsSheet.getDataRange().getValues();
-    if (settingsData.length > 1) {
-      const headers = settingsData[0];
-      const keyIdx = headers.indexOf('key');
-      const valIdx = headers.indexOf('value');
+    const sData = settingsSheet.getDataRange().getValues();
+    let superUser = '';
+    let superPass = '';
+    let superPassRow = -1;
+    let superUserRow = -1;
 
-      let superUsername = '';
-      let superPasswordHash = '';
+    for (let i = 1; i < sData.length; i++) {
+      const k = String(sData[i][0] || '').trim();
+      const v = String(sData[i][1] || '').trim();
+      if (k === 'login_username') { superUser = v.toLowerCase(); superUserRow = i + 1; }
+      if (k === 'login_password') { superPass = v; superPassRow = i + 1; }
+    }
 
-      for (let i = 1; i < settingsData.length; i++) {
-        const key = String(settingsData[i][keyIdx] || '').trim();
-        const val = String(settingsData[i][valIdx] || '').trim();
-        if (key === 'login_username') superUsername = val.toLowerCase();
-        if (key === 'login_password') superPasswordHash = val;
+    if (superUser && superPass && cleanUser === superUser && preHash === superPass) {
+      // Migrasi superadmin dari Settings ke sheet Users
+      let uSheet = ss.getSheetByName(USERS_SHEET);
+      if (!uSheet) {
+        setupSheetsAndHeaders();
+        uSheet = ss.getSheetByName(USERS_SHEET);
+      }
+      const salt = Utilities.getUuid();
+      const hmac = computeHmac_(salt, preHash);
+      const now = new Date();
+      uSheet.appendRow([superUser, 'Superadmin', 'Superadmin', '', salt, hmac, now, now]);
+
+      // Hapus kredensial rahasia dari sheet Settings (S1)
+      if (superPassRow !== -1) settingsSheet.deleteRow(superPassRow);
+      if (superUserRow !== -1 && superUserRow !== superPassRow) {
+        const adjRow = superUserRow > superPassRow ? superUserRow - 1 : superUserRow;
+        settingsSheet.deleteRow(adjRow);
       }
 
-      if (superUsername && superPasswordHash &&
-          String(username).trim().toLowerCase() === superUsername &&
-          passwordHash === superPasswordHash) {
+      cache.remove(rateLimitKey);
+      const token = Utilities.getUuid();
+      const expires = new Date(now.getTime() + SESSION_EXPIRY_HOURS * 60 * 60 * 1000);
+      getSessionSheet_().appendRow([token, superUser, 'Superadmin', 'Superadmin', now, expires]);
 
-        const token = Utilities.getUuid();
-        const now = new Date();
-        const expires = new Date(now.getTime() + SESSION_EXPIRY_HOURS * 60 * 60 * 1000);
-
-        const sessionSheet = getSessionSheet_();
-        sessionSheet.appendRow([token, superUsername, 'Superadmin', 'Superadmin', now, expires]);
-
-        return {
-          ok: true,
-          token: token,
-          user: {
-            username: superUsername,
-            nama: 'Superadmin',
-            role: 'Superadmin'
-          }
-        };
-      }
+      return {
+        ok: true,
+        token: token,
+        user: { username: superUser, nama: 'Superadmin', role: 'Superadmin' }
+      };
     }
   }
 
-  return { ok: false, error: 'Username atau password salah.' };
+  // Catat kegagalan untuk rate limiting
+  const newFails = failAttempts + 1;
+  cache.put(rateLimitKey, String(newFails), 900);
+  const remaining = 5 - newFails;
+  return {
+    ok: false,
+    error: 'Username atau password salah. Sisa kesempatan: ' + remaining
+  };
 }
 
 /**
- * Validasi session token. Return user info atau null jika invalid/expired.
+ * Validasi session saat app mount di frontend.
  */
-function validateToken_(token) {
-  if (!token) return null;
-
-  const sh = getSessionSheet_();
-  const data = sh.getDataRange().getValues();
-  const now = new Date();
-
-  for (let i = 1; i < data.length; i++) {
-    if (String(data[i][0]) === token) {
-      const expires = new Date(data[i][5]);
-      if (now < expires) {
-        return {
-          username: String(data[i][1]),
-          role: String(data[i][2]),
-          nama: String(data[i][3])
-        };
-      } else {
-        // Token expired — hapus row
-        sh.deleteRow(i + 1);
-        return null;
-      }
-    }
-  }
-  return null;
-}
-
-/**
- * Require valid token — throw error jika invalid.
- */
-function requireAuth_(token) {
+function validateSession(token) {
   const user = validateToken_(token);
-  if (!user) {
-    throw new Error('UNAUTHORIZED: Session tidak valid atau sudah expired. Silakan login ulang.');
-  }
-  return user;
+  if (user) return { ok: true, user: user };
+  return { ok: false };
 }
 
 /**
- * Logout — invalidate session token.
+ * Logout — batalkan sesi.
  */
 function logoutSession(token) {
   if (!token) return { ok: true };
-
   const sh = getSessionSheet_();
   const data = sh.getDataRange().getValues();
-
   for (let i = data.length - 1; i >= 1; i--) {
-    if (String(data[i][0]) === token) {
+    if (String(data[i][0]) === String(token)) {
       sh.deleteRow(i + 1);
       break;
     }
@@ -297,25 +391,268 @@ function logoutSession(token) {
   return { ok: true };
 }
 
-function sendEmailReport(token, to, subject, htmlBody) {
-  if (!validateToken_(token)) throw new Error('Unauthorized');
-  MailApp.sendEmail({
-    to: to,
-    subject: subject,
-    htmlBody: htmlBody
-  });
-  return true;
+/**
+ * Status inisialisasi sistem (S1).
+ * Dapat dipanggil publik tanpa token untuk mengetahui apakah sistem sudah disetup.
+ */
+function getBootstrapStatus() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let initialized = false;
+  let storeName = 'INO ERP';
+
+  // Cek apakah ada Superadmin di Users
+  const uSheet = ss.getSheetByName(USERS_SHEET);
+  if (uSheet && uSheet.getLastRow() > 1) {
+    const data = uSheet.getDataRange().getValues();
+    const roleIdx = data[0].indexOf('role');
+    for (let i = 1; i < data.length; i++) {
+      if (String(data[i][roleIdx] || '').trim().toLowerCase() === 'superadmin') {
+        initialized = true;
+        break;
+      }
+    }
+  }
+
+  // Cek nama toko di Settings
+  const sSheet = ss.getSheetByName('Settings');
+  if (sSheet && sSheet.getLastRow() > 1) {
+    const sData = sSheet.getDataRange().getValues();
+    for (let i = 1; i < sData.length; i++) {
+      const k = String(sData[i][0] || '').trim();
+      if (k === 'nama_toko') storeName = String(sData[i][1] || 'INO ERP');
+      if (k === 'login_username' && !initialized) initialized = true;
+    }
+  }
+
+  return { initialized: initialized, storeName: storeName };
 }
 
 /**
- * Validate token (dipanggil dari frontend saat app mount untuk cek session masih valid).
+ * Setup inisial perusahaan baru (S1).
+ * Hanya boleh dijalankan jika initialized === false ATAU dipanggil oleh Superadmin.
  */
-function validateSession(token) {
-  const user = validateToken_(token);
-  if (user) {
-    return { ok: true, user: user };
+function initialSetup(payload) {
+  if (!payload || !payload.email || !payload.passwordHash) {
+    throw new Error('Data superadmin tidak lengkap.');
   }
-  return { ok: false };
+
+  const status = getBootstrapStatus();
+  if (status.initialized) {
+    if (!payload.token) {
+      throw new Error('FORBIDDEN: Sistem sudah terinisialisasi. Setup baru hanya dapat dilakukan oleh Superadmin.');
+    }
+    requireRole_(payload.token, ['Superadmin']);
+  }
+
+  const lock = LockService.getScriptLock();
+  lock.waitLock(15000);
+
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    let uSheet = ss.getSheetByName(USERS_SHEET);
+    if (!uSheet) {
+      setupSheetsAndHeaders();
+      uSheet = ss.getSheetByName(USERS_SHEET);
+    }
+
+    const email = String(payload.email).trim().toLowerCase();
+    const salt = Utilities.getUuid();
+    const hmac = computeHmac_(salt, payload.passwordHash);
+    const now = new Date();
+
+    // Upsert baris superadmin di Users
+    const uData = uSheet.getDataRange().getValues();
+    let found = false;
+    for (let i = 1; i < uData.length; i++) {
+      if (String(uData[i][0] || '').toLowerCase() === email) {
+        uSheet.getRange(i + 1, 1, 1, 8).setValues([[
+          email, 'Superadmin', 'Superadmin', '', salt, hmac, uData[i][6] || now, now
+        ]]);
+        found = true;
+        break;
+      }
+    }
+    if (!found) {
+      uSheet.appendRow([email, 'Superadmin', 'Superadmin', '', salt, hmac, now, now]);
+    }
+
+    // Simpan public settings
+    if (payload.settings && Array.isArray(payload.settings)) {
+      saveAppSettingsInternal_(payload.settings);
+    }
+
+    return { ok: true, message: 'Inisialisasi berhasil diselesaikan.' };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+// ----------------------------------------------------
+// USER MANAGEMENT ENDPOINTS (S5 — Superadmin Only)
+// ----------------------------------------------------
+
+/**
+ * Daftar pengguna untuk tab Pengaturan (Superadmin only).
+ * Tidak pernah mengirimkan pin, salt, atau hash ke sisi klien.
+ */
+function listUsers(token) {
+  requireRole_(token, ['Superadmin']);
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const uSheet = ss.getSheetByName(USERS_SHEET);
+  if (!uSheet || uSheet.getLastRow() <= 1) return [];
+
+  const data = uSheet.getDataRange().getValues();
+  const headers = data[0];
+  const emailIdx = headers.indexOf('email');
+  const namaIdx = headers.indexOf('nama');
+  const roleIdx = headers.indexOf('role');
+
+  const users = [];
+  for (let i = 1; i < data.length; i++) {
+    const email = String(data[i][emailIdx] || '').trim();
+    if (!email) continue;
+    users.push({
+      email: email,
+      nama: String(data[i][namaIdx] || ''),
+      role: String(data[i][roleIdx] || 'Kasir')
+    });
+  }
+  return users;
+}
+
+/**
+ * Simpan / perbarui user (Superadmin only).
+ */
+function saveUser(token, userData) {
+  requireRole_(token, ['Superadmin']);
+  if (!userData || !userData.email) throw new Error('Email user wajib diisi.');
+
+  const lock = LockService.getScriptLock();
+  lock.waitLock(15000);
+
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    let uSheet = ss.getSheetByName(USERS_SHEET);
+    if (!uSheet) {
+      setupSheetsAndHeaders();
+      uSheet = ss.getSheetByName(USERS_SHEET);
+    }
+
+    const email = String(userData.email).trim().toLowerCase();
+    const nama = String(userData.nama || '');
+    const role = String(userData.role || 'Kasir');
+    const uData = uSheet.getDataRange().getValues();
+    const now = new Date();
+
+    for (let i = 1; i < uData.length; i++) {
+      if (String(uData[i][0] || '').toLowerCase() === email) {
+        // Update user
+        let salt = String(uData[i][4] || '');
+        let hmac = String(uData[i][5] || '');
+        if (userData.pin) {
+          salt = Utilities.getUuid();
+          hmac = computeHmac_(salt, userData.pin);
+        }
+        uSheet.getRange(i + 1, 1, 1, 8).setValues([[
+          email, nama, role, '', salt, hmac, uData[i][6] || now, now
+        ]]);
+        return { ok: true, message: 'User diperbarui.' };
+      }
+    }
+
+    // Insert user baru
+    if (!userData.pin) throw new Error('Password / PIN wajib untuk user baru.');
+    const salt = Utilities.getUuid();
+    const hmac = computeHmac_(salt, userData.pin);
+    uSheet.appendRow([email, nama, role, '', salt, hmac, now, now]);
+    return { ok: true, message: 'User ditambahkan.' };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/**
+ * Hapus user (Superadmin only). Tidak boleh menghapus akun sendiri.
+ */
+function deleteUser(token, emailToDelete) {
+  const current = requireRole_(token, ['Superadmin']);
+  const cleanEmail = String(emailToDelete || '').trim().toLowerCase();
+  if (current.username.toLowerCase() === cleanEmail) {
+    throw new Error('Tidak dapat menghapus akun Anda sendiri.');
+  }
+
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const uSheet = ss.getSheetByName(USERS_SHEET);
+  if (!uSheet || uSheet.getLastRow() <= 1) return { ok: true };
+
+  const data = uSheet.getDataRange().getValues();
+  for (let i = data.length - 1; i >= 1; i--) {
+    if (String(data[i][0] || '').toLowerCase() === cleanEmail) {
+      uSheet.deleteRow(i + 1);
+      return { ok: true, message: 'User berhasil dihapus.' };
+    }
+  }
+  return { ok: true };
+}
+
+/**
+ * Reset PIN / Password user oleh Superadmin.
+ */
+function resetPin(token, email, newPreHash) {
+  requireRole_(token, ['Superadmin']);
+  if (!email || !newPreHash) throw new Error('Email dan password baru wajib diisi.');
+
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const uSheet = ss.getSheetByName(USERS_SHEET);
+  if (!uSheet) throw new Error('Sheet Users tidak ditemukan.');
+
+  const data = uSheet.getDataRange().getValues();
+  const cleanEmail = String(email).trim().toLowerCase();
+
+  for (let i = 1; i < data.length; i++) {
+    if (String(data[i][0] || '').toLowerCase() === cleanEmail) {
+      const salt = Utilities.getUuid();
+      const hmac = computeHmac_(salt, newPreHash);
+      uSheet.getRange(i + 1, 4, 1, 5).setValues([['', salt, hmac, data[i][6], new Date()]]);
+      return { ok: true, message: 'Password user berhasil direset.' };
+    }
+  }
+  throw new Error('User tidak ditemukan.');
+}
+
+/**
+ * S7 — Hardening sendEmailReport
+ * Hanya dapat dipanggil oleh Admin atau Superadmin.
+ * Penerima divalidasi, rate limited melalui CacheService, dan subjek disanitasi.
+ */
+function sendEmailReport(token, to, subject, htmlBody) {
+  requireRole_(token, ['Admin', 'Superadmin']);
+
+  const cleanTo = String(to || '').trim().toLowerCase();
+  if (!cleanTo.includes('@') || cleanTo.length > 100) {
+    throw new Error('Alamat email tujuan tidak valid.');
+  }
+
+  // Rate limiting pengiriman email: maks 10 email per jam
+  const cache = CacheService.getScriptCache();
+  const countKey = 'email_report_rate_limit';
+  const sentCount = Number(cache.get(countKey) || 0);
+  if (sentCount >= 10) {
+    throw new Error('LIMIT_EXCEEDED: Batas pengiriman email per jam tercapai (maks 10).');
+  }
+  cache.put(countKey, String(sentCount + 1), 3600);
+
+  // Sanitasi subjek untuk mencegah header injection
+  const cleanSubject = String(subject || 'Laporan INO ERP')
+    .replace(/[\r\n]/g, ' ')
+    .slice(0, 150);
+
+  MailApp.sendEmail({
+    to: cleanTo,
+    subject: cleanSubject,
+    htmlBody: String(htmlBody || '')
+  });
+  return true;
 }
 
 // ----------------------------------------------------
@@ -472,89 +809,127 @@ function saveAllToSheet(sheetName, items) {
 }
 
 // ----------------------------------------------------
-// PRODUCTS (READ = public, WRITE = auth required)
+// PRODUCTS (S3, S4)
 // ----------------------------------------------------
-function getProducts() { try { return getSheetData('Products'); } catch(e) { throw new Error(e.message); } }
+function getProducts(token) {
+  const user = requireAuth_(token);
+  try {
+    const products = getSheetData('Products');
+    if (user.role === 'Kasir') {
+      return products.map(p => {
+        const copy = { ...p };
+        delete copy.hpp;
+        delete copy.HPP;
+        return copy;
+      });
+    }
+    return products;
+  } catch(e) {
+    throw new Error(e.message);
+  }
+}
 
 function saveProduct(token, product) {
-  requireAuth_(token);
+  requireRole_(token, ['Admin', 'Superadmin']);
   try { saveItemToSheet('Products', product, 'sku'); return true; } catch(e) { throw new Error(e.message); }
 }
 
 function deleteProduct(token, sku) {
-  requireAuth_(token);
+  requireRole_(token, ['Admin', 'Superadmin']);
   try { deleteItemFromSheet('Products', sku, 'sku'); return true; } catch(e) { throw new Error(e.message); }
 }
 
 function saveAllProducts(token, products) {
-  requireAuth_(token);
+  requireRole_(token, ['Superadmin']);
   try { saveAllToSheet('Products', products); return true; } catch(e) { throw new Error(e.message); }
 }
 
 // ----------------------------------------------------
-// CUSTOMERS
+// CUSTOMERS (S3, S4)
 // ----------------------------------------------------
-function getCustomers() { try { return getSheetData('Customers'); } catch(e) { throw new Error(e.message); } }
+function getCustomers(token) {
+  const user = requireAuth_(token);
+  try {
+    const customers = getSheetData('Customers');
+    if (user.role === 'Kasir') {
+      return customers.map(c => {
+        const copy = { ...c };
+        delete copy.piutang;
+        return copy;
+      });
+    }
+    return customers;
+  } catch(e) {
+    throw new Error(e.message);
+  }
+}
 
 function saveCustomer(token, customer) {
-  requireAuth_(token);
+  requireRole_(token, ['Admin', 'Superadmin']);
   try { saveItemToSheet('Customers', customer, 'id'); return true; } catch(e) { throw new Error(e.message); }
 }
 
 function deleteCustomer(token, id) {
-  requireAuth_(token);
+  requireRole_(token, ['Admin', 'Superadmin']);
   try { deleteItemFromSheet('Customers', id, 'id'); return true; } catch(e) { throw new Error(e.message); }
 }
 
 function saveAllCustomers(token, customers) {
-  requireAuth_(token);
+  requireRole_(token, ['Superadmin']);
   try { saveAllToSheet('Customers', customers); return true; } catch(e) { throw new Error(e.message); }
 }
 
 // ----------------------------------------------------
-// SUPPLIERS
+// SUPPLIERS (S3, S4 — Admin & Superadmin only)
 // ----------------------------------------------------
-function getSuppliers() { try { return getSheetData('Suppliers'); } catch(e) { throw new Error(e.message); } }
+function getSuppliers(token) {
+  requireRole_(token, ['Admin', 'Superadmin']);
+  try { return getSheetData('Suppliers'); } catch(e) { throw new Error(e.message); }
+}
 
 function saveSupplier(token, supplier) {
-  requireAuth_(token);
+  requireRole_(token, ['Admin', 'Superadmin']);
   try { saveItemToSheet('Suppliers', supplier, 'id'); return true; } catch(e) { throw new Error(e.message); }
 }
 
 function deleteSupplier(token, id) {
-  requireAuth_(token);
+  requireRole_(token, ['Admin', 'Superadmin']);
   try { deleteItemFromSheet('Suppliers', id, 'id'); return true; } catch(e) { throw new Error(e.message); }
 }
 
 function saveAllSuppliers(token, suppliers) {
-  requireAuth_(token);
+  requireRole_(token, ['Superadmin']);
   try { saveAllToSheet('Suppliers', suppliers); return true; } catch(e) { throw new Error(e.message); }
 }
 
 // ----------------------------------------------------
-// CONSIGNMENTS
+// CONSIGNMENTS (S3, S4 — Admin & Superadmin only)
 // ----------------------------------------------------
-function getConsignments() { try { return getSheetData('Consignments'); } catch(e) { throw new Error(e.message); } }
+function getConsignments(token) {
+  requireRole_(token, ['Admin', 'Superadmin']);
+  try { return getSheetData('Consignments'); } catch(e) { throw new Error(e.message); }
+}
 
 function saveConsignment(token, consignment) {
-  requireAuth_(token);
+  requireRole_(token, ['Admin', 'Superadmin']);
   try { saveItemToSheet('Consignments', consignment, 'id'); return true; } catch(e) { throw new Error(e.message); }
 }
 
 function deleteConsignment(token, id) {
-  requireAuth_(token);
+  requireRole_(token, ['Admin', 'Superadmin']);
   try { deleteItemFromSheet('Consignments', id, 'id'); return true; } catch(e) { throw new Error(e.message); }
 }
 
 function saveAllConsignments(token, consignments) {
-  requireAuth_(token);
+  requireRole_(token, ['Superadmin']);
   try { saveAllToSheet('Consignments', consignments); return true; } catch(e) { throw new Error(e.message); }
 }
 
 // ----------------------------------------------------
-// PURCHASE ORDERS (JOIN Header + Items)
+// PURCHASE ORDERS (S3, S4 — JOIN Header + Items)
 // ----------------------------------------------------
-function getPurchaseOrders() {
+function getPurchaseOrders(token) {
+  requireRole_(token, ['Admin', 'Superadmin']);
   try {
     const orders = getSheetData('PurchaseOrders');
     const items = getSheetData('PurchaseOrderItems');
@@ -578,7 +953,7 @@ function getPurchaseOrders() {
 }
 
 function savePurchaseOrder(token, order) {
-  requireAuth_(token);
+  requireRole_(token, ['Admin', 'Superadmin']);
   const lock = LockService.getScriptLock();
   try {
     lock.waitLock(15000);
@@ -630,7 +1005,7 @@ function savePurchaseOrder(token, order) {
 }
 
 function deletePurchaseOrder(token, id) {
-  requireAuth_(token);
+  requireRole_(token, ['Admin', 'Superadmin']);
   try {
     // Delete header
     deleteItemFromSheet('PurchaseOrders', id, 'id');
@@ -656,7 +1031,7 @@ function deletePurchaseOrder(token, id) {
 }
 
 function saveAllPurchaseOrders(token, orders) {
-  requireAuth_(token);
+  requireRole_(token, ['Superadmin']);
   const lock = LockService.getScriptLock();
   try {
     lock.waitLock(15000);
@@ -680,8 +1055,6 @@ function saveAllPurchaseOrders(token, orders) {
       }
     }
     
-    // Note: saveAllToSheet already has its own lock, but we already hold it here
-    // So we call the raw logic directly to avoid deadlock
     saveAllToSheetRaw_('PurchaseOrders', headers);
     saveAllToSheetRaw_('PurchaseOrderItems', allItems);
     return true;
@@ -718,9 +1091,10 @@ function saveAllToSheetRaw_(sheetName, items) {
 }
 
 // ----------------------------------------------------
-// SALES ORDERS (JOIN Header + Items)
+// SALES ORDERS (S3, S4, D5 — JOIN Header + Items)
 // ----------------------------------------------------
-function getSalesOrders() {
+function getSalesOrders(token) {
+  const user = requireAuth_(token);
   try {
     const orders = getSheetData('SalesOrders');
     const items = getSheetData('SalesOrderItems');
@@ -732,7 +1106,18 @@ function getSalesOrders() {
     }
     
     for (const order of orders) {
-      order.items = itemsBySO[order.id] || [];
+      // D5: Prioritas ambil dari sheet SalesOrderItems. Fallback ke kolom JSON header jika legacy POS.
+      if (itemsBySO[order.id] && itemsBySO[order.id].length > 0) {
+        order.items = itemsBySO[order.id];
+      } else if (order.items && typeof order.items === 'string' && order.items.startsWith('[')) {
+        try { order.items = JSON.parse(order.items); } catch(e) {}
+      } else if (!Array.isArray(order.items)) {
+        order.items = [];
+      }
+
+      if (user.role === 'Kasir') {
+        order.items.forEach(it => { delete it.hpp; });
+      }
     }
     
     return orders;
@@ -742,7 +1127,7 @@ function getSalesOrders() {
 }
 
 function saveSalesOrder(token, order) {
-  requireAuth_(token);
+  requireRole_(token, ['Admin', 'Superadmin']);
   const lock = LockService.getScriptLock();
   try {
     lock.waitLock(15000);
@@ -791,7 +1176,7 @@ function saveSalesOrder(token, order) {
 }
 
 function deleteSalesOrder(token, id) {
-  requireAuth_(token);
+  requireRole_(token, ['Admin', 'Superadmin']);
   try {
     deleteItemFromSheet('SalesOrders', id, 'id');
     
@@ -815,7 +1200,7 @@ function deleteSalesOrder(token, id) {
 }
 
 function saveAllSalesOrders(token, orders) {
-  requireAuth_(token);
+  requireRole_(token, ['Superadmin']);
   const lock = LockService.getScriptLock();
   try {
     lock.waitLock(15000);
@@ -850,32 +1235,38 @@ function saveAllSalesOrders(token, orders) {
 }
 
 // ----------------------------------------------------
-// CASH LEDGER
+// CASH LEDGER (S3, S4 — Admin & Superadmin only)
 // ----------------------------------------------------
-function getCashLedger() { try { return getSheetData('CashLedger'); } catch(e) { throw new Error(e.message); } }
+function getCashLedger(token) {
+  requireRole_(token, ['Admin', 'Superadmin']);
+  try { return getSheetData('CashLedger'); } catch(e) { throw new Error(e.message); }
+}
 
 function saveCashEntry(token, entry) {
-  requireAuth_(token);
+  requireRole_(token, ['Admin', 'Superadmin']);
   try { saveItemToSheet('CashLedger', entry, 'id'); return true; } catch(e) { throw new Error(e.message); }
 }
 
 function deleteCashEntry(token, id) {
-  requireAuth_(token);
+  requireRole_(token, ['Admin', 'Superadmin']);
   try { deleteItemFromSheet('CashLedger', id, 'id'); return true; } catch(e) { throw new Error(e.message); }
 }
 
 function saveAllCashLedger(token, ledger) {
-  requireAuth_(token);
+  requireRole_(token, ['Superadmin']);
   try { saveAllToSheet('CashLedger', ledger); return true; } catch(e) { throw new Error(e.message); }
 }
 
 // ----------------------------------------------------
-// INVENTORY LOG (Append Only / Full Replace)
+// INVENTORY LOG (S3, S4 — Append Only / Full Replace)
 // ----------------------------------------------------
-function getOpnameLog() { try { return getSheetData('InventoryLog'); } catch(e) { throw new Error(e.message); } }
+function getOpnameLog(token) {
+  requireRole_(token, ['Admin', 'Superadmin']);
+  try { return getSheetData('InventoryLog'); } catch(e) { throw new Error(e.message); }
+}
 
 function appendOpnameLog(token, logEntry) {
-  requireAuth_(token);
+  requireRole_(token, ['Admin', 'Superadmin']);
   try {
     const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('InventoryLog');
     if (!sheet) throw new Error("Sheet 'InventoryLog' tidak ditemukan.");
@@ -895,40 +1286,89 @@ function appendOpnameLog(token, logEntry) {
 }
 
 function saveAllOpnameLog(token, logs) {
-  requireAuth_(token);
+  requireRole_(token, ['Superadmin']);
   try { saveAllToSheet('InventoryLog', logs); return true; } catch(e) { throw new Error(e.message); }
 }
 
 // ==========================================
-// SETTINGS
+// SETTINGS (S1)
 // ==========================================
 
-function getAppSettings() {
+const SETTINGS_WHITELIST = [
+  'nama_toko', 'tipe_bisnis', 'alamat_toko', 'telp_toko', 'kota_toko',
+  'mata_uang', 'ppn_rate', 'metode_hpp_default', 'drive_folder_struk',
+  'format_tanggal', 'tax_mode_default', 'ppn_status_default'
+];
+
+/**
+ * Mendapatkan pengaturan sistem publik (S1).
+ * Memerlukan token valid dan HANYA mengembalikan kunci publik dalam whitelist.
+ * Tidak pernah membocorkan password atau kredensial rahasia.
+ */
+function getAppSettings(token) {
+  requireAuth_(token);
   try {
-    return getSheetData('Settings');
+    const rawData = getSheetData('Settings');
+    return rawData.filter(item => SETTINGS_WHITELIST.includes(item.key));
   } catch(e) {
     throw new Error(e.message);
   }
 }
 
-function saveAppSettings(settingsList) {
-  // settingsList is array of { key: '...', value: '...' }
-  // we can use saveAllToSheetRaw_ to completely replace Settings tab contents
+/**
+ * Menyimpan pengaturan sistem publik (S1).
+ * Memerlukan peran Superadmin, hanya menerima kunci whitelist,
+ * dan mengupdate in-place di bawah LockService tanpa clearContents.
+ */
+function saveAppSettings(token, settingsList) {
+  requireRole_(token, ['Superadmin']);
+  if (!settingsList || !Array.isArray(settingsList)) {
+    throw new Error('Format settingsList tidak valid.');
+  }
+
+  const lock = LockService.getScriptLock();
+  lock.waitLock(15000);
   try {
-    const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('Settings');
-    if (!sheet) throw new Error("Sheet Settings tidak ditemukan.");
-    
-    // Create matrix
-    const data = [['key', 'value']];
-    for (const item of settingsList) {
-      data.push([item.key, item.value]);
-    }
-    
-    sheet.clearContents();
-    sheet.getRange(1, 1, data.length, 2).setValues(data);
+    saveAppSettingsInternal_(settingsList);
     return true;
   } catch(e) {
     throw new Error(e.message);
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/**
+ * Helper internal untuk menyimpan settings di bawah lock.
+ */
+function saveAppSettingsInternal_(settingsList) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sheet = ss.getSheetByName('Settings');
+  if (!sheet) {
+    setupSheetsAndHeaders();
+    sheet = ss.getSheetByName('Settings');
+  }
+
+  const values = sheet.getDataRange().getValues();
+  const existingMap = {};
+  for (let i = 1; i < values.length; i++) {
+    const k = String(values[i][0] || '').trim();
+    if (k) existingMap[k] = i + 1; // row number (1-based)
+  }
+
+  for (const item of settingsList) {
+    const key = String(item.key || '').trim();
+    if (!SETTINGS_WHITELIST.includes(key)) {
+      // Abaikan kunci yang bukan whitelist publik (S1)
+      continue;
+    }
+    const val = item.value !== undefined && item.value !== null ? String(item.value) : '';
+    if (existingMap[key]) {
+      sheet.getRange(existingMap[key], 2).setValue(val);
+    } else {
+      sheet.appendRow([key, val]);
+      existingMap[key] = sheet.getLastRow();
+    }
   }
 }
 
@@ -938,26 +1378,41 @@ function saveAppSettings(settingsList) {
 // ==========================================
 
 // ==========================================
-// FUNGSI DIPANGGIL POS (google.script.run)
+// FUNGSI DIPANGGIL POS (S3, S6, D5)
 // ==========================================
 
-function getProdukList() {
-  return getSheetDataAsObjects_(SHEET_PRODUCTS);
+function getProdukList(token) {
+  const user = requireAuth_(token);
+  const products = getSheetDataAsObjects_(SHEET_PRODUCTS);
+  if (user.role === 'Kasir') {
+    return products.map(p => {
+      const copy = { ...p };
+      delete copy.hpp;
+      delete copy.HPP;
+      return copy;
+    });
+  }
+  return products;
 }
 
-function getCustomerList() {
-  return getSheetDataAsObjects_(SHEET_CUSTOMERS);
+function getCustomerList(token) {
+  const user = requireAuth_(token);
+  const customers = getSheetDataAsObjects_(SHEET_CUSTOMERS);
+  if (user.role === 'Kasir') {
+    return customers.map(c => {
+      const copy = { ...c };
+      delete copy.piutang;
+      return copy;
+    });
+  }
+  return customers;
 }
 
 /**
- * Riwayat transaksi POS hari ini saja (untuk panel kasir di dalam POS,
- * TERPISAH dari log ERP gabungan). Dipanggil dari POS via:
- *   google.script.run.withSuccessHandler(...).getRiwayatHariIni()
- *
- * Sengaja hanya mengambil transaksi dengan prefix 'POS-' dan tanggal hari
- * ini, supaya kasir cuma lihat miliknya sendiri, bukan semua SO B2B.
+ * Riwayat transaksi POS hari ini saja (S3).
  */
-function getRiwayatHariIni() {
+function getRiwayatHariIni(token) {
+  requireAuth_(token);
   const semua = getSheetDataAsObjects_(SHEET_SALES_ORDERS);
   const today = formatDate_(new Date());
 
@@ -967,74 +1422,203 @@ function getRiwayatHariIni() {
 }
 
 /**
- * Fungsi utama checkout POS. Dipanggil dari:
- *   google.script.run...simpanTransaksiPenjualan(payload)
- *
- * payload = {
- *   customerNama, customerId, metodeBayar, total, kasir,
- *   items: [{ sku, nama, satuan, qty, harga, subtotal }]
- * }
- *
- * Menulis ke SalesOrders (prefix POS-) dan CashLedger, lalu mengurangi
- * stok di Products. Dibungkus LockService supaya aman dari transaksi
- * bersamaan (misal kasir checkout barengan dengan ERP menulis PO).
+ * Fungsi utama checkout POS (S6 & D5).
+ * Validasi ketat server-side:
+ * - Kasir diambil dari session token terverifikasi.
+ * - Harga & HPP diambil dari sheet Products (menolak manipulasi harga dari klien).
+ * - Kuantitas harus > 0 dan finite.
+ * - Stok diverifikasi di server; jika tidak cukup, transaksi DITOLAK (tanpa clamp ke 0).
+ * - Menulis ke SalesOrders DAN baris item ke SalesOrderItems (D5).
+ * - Aturan pembayaran (DEC-02): Piutang menaikkan piutang pelanggan dan tidak masuk kas;
+ *   metode lunas mencatat kas ke CashLedger.
  */
 function simpanTransaksiPenjualan(payload) {
-  if (!payload || !payload.token) throw new Error('UNAUTHORIZED: Token POS tidak disertakan.');
-  requireAuth_(payload.token);
+  if (!payload || !payload.token) throw new Error('UNAUTHORIZED: Token sesi kasir tidak disertakan.');
+  const sessionUser = requireRole_(payload.token, ['Kasir', 'Admin', 'Superadmin']);
+
+  if (!payload.items || !Array.isArray(payload.items) || payload.items.length === 0) {
+    throw new Error('VALIDASI_GAGAL: Transaksi harus memiliki minimal 1 item.');
+  }
+
   const lock = LockService.getScriptLock();
-  lock.waitLock(15000); // tunggu maks 15 detik kalau ada proses lain sedang menulis
+  lock.waitLock(15000); // Tunggu maks 15 detik
 
   try {
     const ss = SpreadsheetApp.getActiveSpreadsheet();
     const now = new Date();
-    const strukNo = generateId_('POS', ss.getSheetByName(SHEET_SALES_ORDERS));
+    const prodSheet = ss.getSheetByName(SHEET_PRODUCTS);
+    if (!prodSheet) throw new Error('Sheet Products tidak ditemukan.');
 
-    // 1. Tulis baris ke SalesOrders (statusnya langsung Selesai/Lunas, khas POS)
+    // 1. Validasi produk & stok di sisi server (S6)
+    const prodData = prodSheet.getDataRange().getValues();
+    if (prodData.length <= 1) throw new Error('Daftar produk di database kosong.');
+    const prodHeaders = prodData[0];
+    const skuIdx = prodHeaders.indexOf('sku');
+    const namaIdx = prodHeaders.indexOf('nama');
+    const hargaJualIdx = prodHeaders.indexOf('hargaJual');
+    const hppIdx = prodHeaders.indexOf('hpp');
+    const stokIdx = prodHeaders.indexOf('stok');
+
+    // Index produk by SKU
+    const productMap = {};
+    for (let i = 1; i < prodData.length; i++) {
+      const s = String(prodData[i][skuIdx] || '').trim();
+      if (s) {
+        productMap[s] = {
+          rowNum: i + 1,
+          sku: s,
+          nama: String(prodData[i][namaIdx] || ''),
+          hargaJual: Number(prodData[i][hargaJualIdx]) || 0,
+          hpp: Number(prodData[i][hppIdx]) || 0,
+          stok: Number(prodData[i][stokIdx]) || 0
+        };
+      }
+    }
+
+    let serverGrandTotal = 0;
+    const verifiedItems = [];
+
+    for (const item of payload.items) {
+      const sku = String(item.sku || '').trim();
+      const p = productMap[sku];
+      if (!p) {
+        throw new Error('PRODUK_TIDAK_DITEMUKAN: Produk dengan SKU \'' + sku + '\' tidak terdaftar di sistem.');
+      }
+
+      const qty = Number(item.qty);
+      if (isNaN(qty) || !isFinite(qty) || qty <= 0) {
+        throw new Error('QTY_INVALID: Kuantitas untuk ' + p.nama + ' harus berupa angka positif.');
+      }
+
+      if (p.stok < qty) {
+        throw new Error('STOK_TIDAK_CUKUP: Stok produk ' + p.nama + ' (' + sku + ') tidak mencukupi (sisa: ' + p.stok + ', diminta: ' + qty + ').');
+      }
+
+      // Gunakan harga server (menolak pemalsuan total/harga dari klien)
+      const hargaSatuan = p.hargaJual;
+      const subtotalItem = Math.round(qty * hargaSatuan);
+      serverGrandTotal += subtotalItem;
+
+      verifiedItems.push({
+        sku: sku,
+        nama: p.nama,
+        satuan: item.satuan || 'Pcs',
+        qty: qty,
+        hargaJual: hargaSatuan,
+        hpp: p.hpp,
+        subtotal: subtotalItem,
+        rowNum: p.rowNum,
+        currentStok: p.stok
+      });
+    }
+
+    // 2. Generate struk ID di bawah lock (D3)
+    const strukNo = generateId_('POS', ss.getSheetByName(SHEET_SALES_ORDERS));
+    const metode = String(payload.metodeBayar || 'Tunai').trim();
+    // DEC-02: QRIS / Transfer / Debit = Lunas; hanya Piutang / Tempo = piutang
+    const isPiutang = (metode.toLowerCase().indexOf('piutang') !== -1 || metode.toLowerCase().indexOf('tempo') !== -1);
+    const statusBayar = isPiutang ? 'Belum Lunas' : 'Lunas';
+    const totalPaid = isPiutang ? 0 : serverGrandTotal;
+
+    // 3. Tulis Header ke SalesOrders
     const soSheet = ss.getSheetByName(SHEET_SALES_ORDERS);
     const soRow = {
       id: strukNo,
       tanggal: formatDate_(now),
+      customerId: payload.customerId || '',
       pelanggan: payload.customerNama || 'Pelanggan Umum Retail',
-      metode: payload.metodeBayar || 'Tunai',
-      items: JSON.stringify(payload.items),
-      subtotal: payload.total,
+      metode: metode,
+      items: JSON.stringify(verifiedItems.map(it => ({
+        sku: it.sku, nama: it.nama, satuan: it.satuan, qty: it.qty, harga: it.hargaJual, subtotal: it.subtotal
+      }))),
+      subtotal: serverGrandTotal,
+      diskon: 0,
       pajak: 0,
-      grandTotal: payload.total,
+      grandTotal: serverGrandTotal,
       statusLogistik: 'Selesai',
-      statusBayar: 'Lunas',
-      kasir: payload.kasir || 'Kasir',
-      catatan: 'Transaksi POS (Point of Sale)',
-      totalPaid: payload.total
+      statusBayar: statusBayar,
+      totalPaid: totalPaid,
+      platform: 'Toko Langsung',
+      kasir: sessionUser.nama || sessionUser.username,
+      catatan: 'Transaksi POS (Point of Sale)'
     };
     appendRowFromObject_(soSheet, soRow);
 
-    // 2. Tulis baris ke CashLedger (kategori 'Penjualan', sama dgn SO B2B
-    //    supaya Laba Rugi tetap menjumlahkan dengan benar)
-    const cashSheet = ss.getSheetByName(SHEET_CASH_LEDGER);
-    const akun = mapMetodeKeAkun_(payload.metodeBayar);
-    const lastSaldoAkun = getLastSaldoForAkun_(cashSheet, akun);
+    // 4. Tulis item ke SalesOrderItems (D5 — Relasional untuk konsistensi ERP)
+    const soItemsSheet = ss.getSheetByName('SalesOrderItems');
+    if (soItemsSheet) {
+      const itemHeaders = soItemsSheet.getDataRange().getValues()[0];
+      const rowsToAdd = verifiedItems.map(it => {
+        const itemObj = {
+          noSO: strukNo,
+          sku: it.sku,
+          nama: it.nama,
+          qty: it.qty,
+          qtyShipped: it.qty,
+          qtyReturned: 0,
+          harga: it.hargaJual,
+          hpp: it.hpp,
+          diskon: 0,
+          ppn: 0,
+          subtotal: it.subtotal
+        };
+        return itemHeaders.map(h => itemObj[h] === undefined ? '' : itemObj[h]);
+      });
+      soItemsSheet.getRange(soItemsSheet.getLastRow() + 1, 1, rowsToAdd.length, itemHeaders.length).setValues(rowsToAdd);
+    }
 
-    const cashRow = {
-      id: generateId_('CSH', cashSheet),
-      tanggal: formatDate_(now),
-      ref: strukNo,
-      keterangan: `Penjualan POS Kasir [${strukNo}]`,
-      kategori: 'Penjualan',
-      debit: payload.total,
-      kredit: 0,
-      saldo: lastSaldoAkun + payload.total,
-      akun: akun
-    };
-    appendRowFromObject_(cashSheet, cashRow);
+    // 5. Catat pembayaran (DEC-02)
+    if (isPiutang) {
+      // Naikkan piutang pelanggan
+      if (payload.customerId || payload.customerNama) {
+        const custSheet = ss.getSheetByName(SHEET_CUSTOMERS);
+        if (custSheet) {
+          const cData = custSheet.getDataRange().getValues();
+          const cHeaders = cData[0];
+          const cIdIdx = cHeaders.indexOf('id');
+          const cNamaIdx = cHeaders.indexOf('nama');
+          const cPiutangIdx = cHeaders.indexOf('piutang');
+          if (cPiutangIdx !== -1) {
+            for (let i = 1; i < cData.length; i++) {
+              const matchedId = payload.customerId && String(cData[i][cIdIdx]) === String(payload.customerId);
+              const matchedNama = !payload.customerId && String(cData[i][cNamaIdx]).toLowerCase() === String(payload.customerNama).toLowerCase();
+              if (matchedId || matchedNama) {
+                const currentPiutang = Number(cData[i][cPiutangIdx]) || 0;
+                custSheet.getRange(i + 1, cPiutangIdx + 1).setValue(currentPiutang + serverGrandTotal);
+                break;
+              }
+            }
+          }
+        }
+      }
+    } else {
+      // Catat kas masuk ke CashLedger
+      const cashSheet = ss.getSheetByName(SHEET_CASH_LEDGER);
+      if (cashSheet) {
+        const akun = mapMetodeKeAkun_(metode);
+        const lastSaldoAkun = getLastSaldoForAkun_(cashSheet, akun);
+        const cashRow = {
+          id: generateId_('CSH', cashSheet),
+          tanggal: formatDate_(now),
+          ref: strukNo,
+          keterangan: 'Penjualan POS Kasir [' + strukNo + ']',
+          kategori: 'Penjualan',
+          debit: serverGrandTotal,
+          kredit: 0,
+          saldo: lastSaldoAkun + serverGrandTotal,
+          akun: akun,
+          metode: metode
+        };
+        appendRowFromObject_(cashSheet, cashRow);
+      }
+    }
 
-    // 3. Kurangi stok di Products untuk tiap item
-    const prodSheet = ss.getSheetByName(SHEET_PRODUCTS);
-    payload.items.forEach(item => {
-      decrementStock_(prodSheet, item.sku, item.qty);
+    // 6. Kurangi stok di sheet Products secara presisi
+    verifiedItems.forEach(it => {
+      prodSheet.getRange(it.rowNum, stokIdx + 1).setValue(it.currentStok - it.qty);
     });
 
-    return { strukNo: strukNo, timestamp: now.getTime() };
+    return { strukNo: strukNo, total: serverGrandTotal, timestamp: now.getTime() };
   } finally {
     lock.releaseLock();
   }
@@ -1143,12 +1727,16 @@ function decrementStock_(prodSheet, sku, qty) {
   if (skuCol === -1 || stokCol === -1) return;
 
   for (let i = 1; i < data.length; i++) {
-    if (data[i][skuCol] === sku) {
+    if (String(data[i][skuCol]).trim() === String(sku).trim()) {
       const currentStok = Number(data[i][stokCol]) || 0;
-      prodSheet.getRange(i + 1, stokCol + 1).setValue(Math.max(0, currentStok - qty));
+      if (currentStok < qty) {
+        throw new Error('STOK_TIDAK_CUKUP: Stok untuk SKU ' + sku + ' tidak mencukupi (sisa: ' + currentStok + ', diminta: ' + qty + ').');
+      }
+      prodSheet.getRange(i + 1, stokCol + 1).setValue(currentStok - qty);
       return;
     }
   }
+  throw new Error('PRODUK_TIDAK_DITEMUKAN: SKU ' + sku + ' tidak ditemukan.');
 }
 
 function getLastSaldoForAkun_(cashSheet, akun) {
@@ -1193,36 +1781,65 @@ function saveProduct_(product) {
 // ==========================================
 
 /**
- * Menghapus SEMUA baris data (produk, pelanggan, supplier, transaksi, kas) di
- * seluruh sheet, hanya menyisakan baris header (baris 1).
+ * S2 — Hardening resetSemuaData
  *
- * PENTING - CARA PAKAI:
- * - Fungsi ini SENGAJA TIDAK dipanggil dari POS atau ERP (tidak ada di doPost/
- *   doGet), supaya tidak bisa terpicu tidak sengaja dari luar.
- * - Jalankan MANUAL dari editor Apps Script: buka file ini, pilih fungsi
- *   resetSemuaData di dropdown atas, klik Run. Akan diminta konfirmasi izin
- *   Google pertama kali.
- * - Jalankan HANYA SEKALI saat benar-benar selesai testing dan siap go-live.
- *   Tidak ada tombol undo — pastikan Anda sudah backup/download Sheet dulu
- *   kalau masih ragu (File > Buat Salinan di Google Sheets).
+ * PENGAMANAN MUTLAK:
+ * - Fungsi ini DITOLAK secara server-side kecuali pemilik skrip secara eksplisit
+ *   menyetel Script Property: ALLOW_RESET = 'true' di editor Apps Script (Project Settings > Script Properties).
+ * - Property tersebut AKAN DIHAPUS OTOMATIS segera setelah fungsi dipicu untuk mencegah eksekusi berulang.
+ * - Sebelum menghapus satu sel pun, seluruh sheet transaksi dan master disalin ke
+ *   sheet cadangan bertanda waktu: '_Backup_<NamaSheet>_<YYYYMMDD_HHmmss>'.
+ * - Menangani SEMUA sheet data: Products, Customers, Suppliers, SalesOrders, SalesOrderItems,
+ *   PurchaseOrders, PurchaseOrderItems, CashLedger, InventoryLog, CashAccounts, PaymentMethods, VoidLog.
+ * - Catatan: Mengingat fungsi GAS dapat dipicu lewat google.script.run oleh siapa pun yang
+ *   memiliki URL, proteksi berbasis Script Property ini mutlak diperlukan di trust boundary server.
  */
 function resetSemuaData() {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const sheetNames = [SHEET_PRODUCTS, SHEET_CUSTOMERS, SHEET_SALES_ORDERS, SHEET_CASH_LEDGER];
+  const props = PropertiesService.getScriptProperties();
+  const allowReset = props.getProperty('ALLOW_RESET');
 
-  sheetNames.forEach(name => {
+  if (allowReset !== 'true') {
+    throw new Error('DITOLAK: Operasi resetSemuaData ditolak server. Script Property ALLOW_RESET belum diaktifkan (harus bernilai \'true\').');
+  }
+
+  // Hapus izin seketika agar tidak dapat dipanggil berulang
+  props.deleteProperty('ALLOW_RESET');
+
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const timestamp = Utilities.formatDate(new Date(), 'GMT+8', 'yyyyMMdd_HHmmss');
+  const targetSheets = [
+    'Products', 'Customers', 'Suppliers', 'SalesOrders', 'SalesOrderItems',
+    'PurchaseOrders', 'PurchaseOrderItems', 'CashLedger', 'InventoryLog',
+    'CashAccounts', 'PaymentMethods', 'VoidLog'
+  ];
+
+  Logger.log('=== MEMULAI RESET TOTAL DENGAN BACKUP OTOMATIS [' + timestamp + '] ===');
+
+  targetSheets.forEach(name => {
     const sheet = ss.getSheetByName(name);
     if (!sheet) return;
 
     const lastRow = sheet.getLastRow();
     const lastCol = sheet.getLastColumn();
-    if (lastRow <= 1) return; // cuma ada header atau kosong, tidak perlu apa-apa
+    if (lastRow <= 1) return; // Hanya ada header atau kosong
 
-    // Hapus baris 2 sampai terakhir, baris 1 (header) tetap utuh
+    // 1. Buat backup sheet sebelum menghapus data
+    const backupName = '_Backup_' + name + '_' + timestamp;
+    try {
+      const backupSheet = sheet.copyTo(ss);
+      backupSheet.setName(backupName);
+      try { backupSheet.hideSheet(); } catch (e) {}
+      Logger.log('✓ Backup dibuat: ' + backupName + ' (' + (lastRow - 1) + ' baris)');
+    } catch (e) {
+      Logger.log('! Peringatan backup ' + name + ': ' + e.message);
+    }
+
+    // 2. Hapus baris data (baris 2 sampai akhir), baris 1 (header) tetap utuh
     sheet.getRange(2, 1, lastRow - 1, lastCol).clearContent();
+    Logger.log('✓ Data ' + name + ' dikosongkan. Header dipertahankan.');
   });
 
-  Logger.log('Reset selesai. Semua sheet dikosongkan, header tetap ada: ' + sheetNames.join(', '));
+  Logger.log('=== RESET TOTAL BERHASIL DISELESAIKAN ===');
 }
 
 // ==========================================
@@ -1246,10 +1863,13 @@ function checkApiToken_(token) {
 // ==========================================
 
 /**
- * Dipanggil dari POS via google.script.run.getRingkasanDashboard()
+ * Dipanggil dari POS via google.script.run.getRingkasanDashboard(token) (S3)
  * Mengambil ringkasan data omzet, hutang, piutang, dan stok kritis hari ini.
+ * Memerlukan token terverifikasi; Kasir tidak melihat hutang/piutang (DEC-10);
+ * Dokumen Void diabaikan (DEC-05).
  */
-function getRingkasanDashboard() {
+function getRingkasanDashboard(token) {
+  const user = requireAuth_(token);
   const today = formatDate_(new Date());
   
   // 1. Hitung Omzet dan Transaksi Hari Ini
@@ -1259,6 +1879,9 @@ function getRingkasanDashboard() {
   let salesLogs = [];
   
   salesOrders.forEach(so => {
+    // Abaikan dokumen Void (DEC-05)
+    if (so.statusBayar === 'Void' || so.statusLogistik === 'Void') return;
+
     // Ambil semua transaksi hari ini (baik POS maupun B2B)
     if (so.tanggal === today) {
       jumlahTransaksiHariIni++;
@@ -1287,21 +1910,21 @@ function getRingkasanDashboard() {
     .sort((a, b) => String(b.struk).localeCompare(String(a.struk)))
     .slice(0, 10);
     
-  // 2. Hitung Total Piutang
-  const customers = getSheetDataAsObjects_(SHEET_CUSTOMERS);
-  const totalPiutang = customers.reduce((sum, c) => sum + (Number(c.piutang) || 0), 0);
-  
-  // 3. Hitung Total Hutang
+  // 2. Hitung Total Piutang & Hutang (Kasir tidak boleh melihat angka piutang/hutang - DEC-10)
+  let totalPiutang = 0;
   let totalHutang = 0;
-  // Karena SHEET_SUPPLIERS tidak ada di konstanta atas, kita definisikan lokal
-  try {
-    const suppliers = getSheetDataAsObjects_('Suppliers');
-    totalHutang = suppliers.reduce((sum, s) => sum + (Number(s.hutang) || 0), 0);
-  } catch(e) {
-    // Abaikan jika sheet Suppliers belum dibuat
+  if (user.role !== 'Kasir') {
+    const customers = getSheetDataAsObjects_(SHEET_CUSTOMERS);
+    totalPiutang = customers.reduce((sum, c) => sum + (Number(c.piutang) || 0), 0);
+    try {
+      const suppliers = getSheetDataAsObjects_('Suppliers');
+      totalHutang = suppliers.reduce((sum, s) => sum + (Number(s.hutang) || 0), 0);
+    } catch(e) {
+      // Abaikan jika sheet belum dibuat
+    }
   }
   
-  // 4. Hitung Stok Kritis
+  // 3. Hitung Stok Kritis
   const products = getSheetDataAsObjects_(SHEET_PRODUCTS);
   let jumlahStokKritis = 0;
   products.forEach(p => {

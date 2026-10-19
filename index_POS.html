@@ -481,7 +481,7 @@ let currentCategory = 'Semua';
 let currentPayMethod = 'Tunai';
 let currentModal = null;
 let KASIR_NAME = '';
-let SESSION_TOKEN = localStorage.getItem('pos_session_token') || '';
+let SESSION_TOKEN = sessionStorage.getItem('pos_session_token') || '';
 
 async function sha256(message) {
   const msgBuffer = new TextEncoder().encode(message);
@@ -539,7 +539,7 @@ function doLogin() {
         
         SESSION_TOKEN = res.token;
         KASIR_NAME = res.user.nama;
-        localStorage.setItem('pos_session_token', SESSION_TOKEN);
+        sessionStorage.setItem('pos_session_token', SESSION_TOKEN);
         finishLoginInit();
       })
       .withFailureHandler(e => {
@@ -563,7 +563,7 @@ function finishLoginInit() {
       renderProducts();
     })
     .withFailureHandler(err => alert("Gagal memuat produk: " + err.message))
-    .getProdukList();
+    .getProdukList(SESSION_TOKEN);
 
   google.script.run
     .withSuccessHandler(res => {
@@ -573,7 +573,7 @@ function finishLoginInit() {
       sel.innerHTML = defaultOption + res.map(c => `<option value="${c.id}">${c.nama}</option>`).join('');
     })
     .withFailureHandler(err => alert("Gagal memuat customer: " + err.message))
-    .getCustomerList();
+    .getCustomerList(SESSION_TOKEN);
 
   renderDashboard();
 }
@@ -908,7 +908,7 @@ function openRiwayat() {
       document.getElementById('riwayat-list').innerHTML =
         `<div style="text-align:center;color:var(--red);padding:20px;font-size:12px">Gagal memuat: ${err.message}</div>`;
     })
-    .getRiwayatHariIni();
+    .getRiwayatHariIni(SESSION_TOKEN);
 }
 
 function renderRiwayat(list) {
@@ -981,7 +981,7 @@ function renderDashboard() {
         </div>
         <div class="log-amount">Rp ${rp(s.amount)}</div>
       </div>`).join('');
-  }).withFailureHandler(err => alert("Gagal memuat dashboard: " + err.message)).getRingkasanDashboard();
+  }).withFailureHandler(err => alert("Gagal memuat dashboard: " + err.message)).getRingkasanDashboard(SESSION_TOKEN);
 }
 
 function rp(n) { return Math.round(n || 0).toLocaleString('id-ID'); }

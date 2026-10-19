@@ -15,7 +15,7 @@
 1. **Jangan menyentuh Spreadsheet atau deployment produksi.** Semua pengujian memakai *salinan* Sheet dan deployment GAS terpisah (W0.1).
 2. **Satu work item = satu commit kecil.** Setelah tiap item jalankan `npm run lint` dan `npm run build`; tempel hasilnya di pesan commit.
 3. **Jangan menulis ulang `src/App.tsx`** (9.451 baris). Sentuh hanya fungsi yang disebut di work item.
-4. **Tidak ada dependency baru**, kecuali `vitest` sebagai devDependency di W4.4.
+4. **Tidak ada dependency baru**, kecuali `vitest` (W4.4) dan dependensi yang benar-benar dibutuhkan blok template dashboard yang dipilih pemilik (Lampiran C). Setiap tambahan wajib didaftar dan dibenarkan di pesan commit.
 5. Jika kolom *Jawaban* di Decision Log (§4) kosong, pakai kolom **Default**, beri komentar `// DECISION-xx: default dipakai` di kode, lalu daftar semuanya di laporan akhir.
 6. **Dilarang menjalankan** `resetSemuaData`, `runDummyCleanupMigration`, atau `saveAll*` terhadap data nyata.
 7. Ragu soal logika uang/stok → **berhenti dan tanya**, jangan menebak.
@@ -72,6 +72,7 @@
 - Tidak migrasi ke database lain (kecuali DEC-01 menunjukkan skala yang tak muat di Sheets — lihat Fase 5).
 - Tidak menulis ulang UI/`App.tsx`, tidak mengganti state management, tidak menambah fitur baru.
 - **Tidak ada modul keuangan/akuntansi** (biaya umum, gaji, sewa, aset tetap, neraca, laba bersih). Itu aplikasi terpisah; di sini cukup skema Sheet yang stabil dan terdokumentasi agar bisa disambung kelak.
+- **Pemantauan antar-cabang** dikerjakan sebagai aplikasi terpisah (instruksi menyusul dari pemilik); aplikasi ini satu perusahaan.
 - Tidak multi-tenant (kecuali DEC-01 menjawab sebaliknya).
 - Tidak mengganti kerangka UI atau menambah library.
 
@@ -98,6 +99,7 @@ Kolom **Default** dipakai jika *Jawaban* kosong. Fase 3 baru dikerjakan setelah 
 | DEC-14 | Ruang lingkup aplikasi & definisi laba. | Aplikasi = operasional | **Aplikasi ini khusus operasional** (penjualan, pembelian, stok, piutang/hutang, saldo akun dari transaksi). Keuangan (biaya umum, gaji, sewa, aset tetap, neraca) = aplikasi terpisah yang nanti disambung. Maka laba di dashboard = **Laba Kotor** (Penjualan − HPP); tidak ada Laba Bersih. |
 | DEC-15 | Void POS: siapa yang boleh? | Kasir boleh void langsung dengan alasan wajib | **Void POS diizinkan dan fleksibel**; wajib tercatat (Void Log), tidak mengubah angka apa pun di ERP. *Tafsiran: kasir boleh langsung void; kontrolnya Void Log, bukan persetujuan.* Void SO/PO tetap Admin+. |
 | DEC-16 | Akun & metode pembayaran. | Diatur di Settings | **Diatur di Settings (database):** daftar akun (Kas Kasir, bank A/B/C, …); **tiap akun punya daftar metode pembayaran** yang bisa ditambah user (mis. BCA: Transfer, QRIS, Debit). Tiap mutasi harus mencatat akun **dan** metode dengan jelas. |
+| DEC-17 | Template/komponen dashboard yang dipakai. | Tremor Blocks (MIT), lihat Lampiran C | | 
 | DEC-13 | Header Sheet live. | Anggap = `setup_sheets.gs` | **Pemilik tidak perlu menyalin.** Antigravity menjalankan `auditSheetHeaders()` pada salinan Sheet (W0.3). |
 
 ---
@@ -157,6 +159,30 @@ Semua berkas: `Code_ERP.gs`, `src/authService.ts`, `src/dataService.ts`, `src/Ap
 
 **S8 — Dependensi & import** *(Sedang)*
 - "Celah Import" (`SettingsTab`, tab `dev`) hanya Superadmin. Untuk `xlsx`: batasi parsing ke berkas milik Superadmin dan catat risiko; ganti ke build SheetJS terbaru yang dipublikasikan resmi jika tersedia tanpa dependency baru. Jalankan `npm audit fix` untuk `postcss`/`source-map-js`.
+
+### Fase 1b — Koreksi hasil review Fase 1 (kerjakan SEBELUM Fase 2)
+
+Review 18 Okt 2026 atas hasil Fase 1. **Peringatan: R15 membuat semua kontrol akses di bawah ini bisa dilewati sampai diperbaiki.** Yang sudah benar secara kode: S1 (Settings/wizard terkunci), S2 (`resetSemuaData` dijaga `ALLOW_RESET`), S3 (semua endpoint baca butuh token), S4 (peran di server), HPP/piutang disembunyikan dari Kasir, token POS di `sessionStorage`, `tsc` 0 error, build lolos, tak ada rahasia di repo. Yang salah/kurang:
+
+| ID | Sev | Masalah (bukti) | Perbaikan & kriteria terima |
+|---|---|---|---|
+| R15 | 🔴 | **Pintu belakang yang menggugurkan seluruh Fase 1.** Fungsi pembantu `getSheetData(sheetName)` (`Code_ERP.gs:713`), `saveItemToSheet` (`:724`), `deleteItemFromSheet` (`:754`), `saveAllToSheet` (`:777`) **publik** (tanpa underscore), menerima nama sheet sembarang, dan **tanpa auth**. Dari konsol browser siapa pun bisa menjalankan `google.script.run.getSheetData('_Sessions')` (mencuri token semua sesi termasuk Superadmin), `getSheetData('Users')` (salt, HMAC, dan kolom `pin` legacy yang masih bisa dipakai login), `saveItemToSheet('Users', …)` / `saveAllToSheet('Users', …)` (membuat Superadmin), atau `saveAllToSheet('Products', [])` (mengosongkan tabel). Klien tidak memanggilnya, jadi mengunci tidak merusak apa pun. Temuan ini juga terlewat di audit pertama. | **KERJAKAN PALING PERTAMA, sebelum R1.** Ganti nama menjadi `getSheetData_`, `saveItemToSheet_`, `deleteItemFromSheet_`, `saveAllToSheet_` (juga `rowsToObjects_`, `parseNumbers_`) dan perbarui semua pemanggil internal. Tambahkan allow-list nama sheet pada helper. Tinjau `auditSheetHeaders` (jadikan Superadmin-only) dan `logoutSession`. Uji: dari konsol `google.script.run.getSheetData('_Sessions')` → `is not a function`; `review-checks.sh` bagian 2b lolos. |
+| R1 | 🔴 | `const SCHEMA` dideklarasikan di **`Code_ERP.gs:28` dan `setup_sheets.gs:5`** (isi identik). Semua `.gs` berbagi satu scope global di Apps Script, dan `Code_ERP.gs` memanggil `setupSheetsAndHeaders()` dari berkas kedua, jadi keduanya harus ada. Deklarasi ganda `const` sangat mungkin membuat **seluruh proyek gagal dimuat** (SyntaxError). | Hapus `const SCHEMA` dari `setup_sheets.gs` (sisakan satu sumber di `Code_ERP.gs`). Tempel kedua berkas ke proyek GAS uji: tak ada error muat; `auditSheetHeaders()` dan `setupSheetsAndHeaders()` berjalan. |
+| R2 | 🔴 | Kontrak `initialSetup` tak cocok. Klien (`App.tsx:3377-3393`) mengirim `{superadminEmail, superadminPasswordHash, superadminNama, settings:{…objek}}`; server (`Code_ERP.gs:434`) menuntut `payload.email`, `payload.passwordHash`, dan `settings` berupa **array** `{key,value}`. Setup awal pada sistem baru selalu gagal ('Data superadmin tidak lengkap'). | Samakan kontrak di satu sisi; server memvalidasi bentuk payload. Uji: Sheet kosong → wizard → Superadmin tercipta → login berhasil → Settings publik tersimpan. |
+| R3 | 🔴 | Checkout POS (`Code_ERP.gs:1435`) memvalidasi stok **per baris** terhadap stok awal, lalu menulis `currentStok - qty` per baris. Payload dengan SKU yang sama dua kali (mis. 6 + 6 saat stok 10) lolos validasi, dan baris terakhir menimpa sehingga stok hanya berkurang 6. | Agregasi `qty` per SKU sebelum validasi; tulis stok sekali per SKU. Uji: SKU ganda yang jumlahnya melebihi stok → ditolak; jumlahnya ≤ stok → stok berkurang penuh. |
+| R4 | 🔴 | **Stored XSS → eskalasi hak.** Server menyimpan `customerNama` dari klien apa adanya (`:1529`); POS merender data lewat `innerHTML` tanpa escape (13 sink, mis. `index_POS.html:927-933,975-981`). Kasir bisa menyisipkan skrip yang berjalan di sesi Admin/Superadmin yang membuka POS dan mencuri token `sessionStorage`. Juga `onclick="selectProduct('${p.sku}')"` rusak pada SKU bertanda kutip. | Server: nama pelanggan diambil dari sheet Customers lewat `customerId` (tolak jika tak ada; "Pelanggan Umum" hanya bila `customerId` kosong). POS: pakai `textContent`/fungsi `esc()` untuk semua data dinamis dan `addEventListener`/`data-*` pengganti `onclick` inline. Uji: nama berisi `<img onerror=…>` tampil sebagai teks dan tak mengeksekusi apa pun. |
+| R5 | 🟠 | `computeHmac_` (`:126`) memakai pepper cadangan **`'INO_ERP_PEPPER_2026_DEFAULT'`** yang tertulis di repo bila `AUTH_PEPPER` belum diset. | Jika `AUTH_PEPPER` kosong: buat acak sekali (`Utilities.getUuid()` ×2), simpan di Script Properties, dan jangan pernah ada nilai bawaan di kode. |
+| R6 | 🟠 | `initialSetup` (`:434`) tanpa rahasia awal: siapa pun yang pertama membuka URL deployment baru menjadi Superadmin. | Wajibkan Script Property `SETUP_CODE` (di-set pemilik di editor) pada setup pertama; dihapus otomatis setelah sukses. |
+| R7 | 🟠 | Sesi tidak dibatalkan saat user dihapus/di-reset/diturunkan perannya: peran disalin ke baris `_Sessions` dan berlaku 24 jam (`:170`, `deleteUser :577`, `resetPin :601`, `saveUser :526`). | Hapus semua sesi user terkait pada tiga aksi itu (atau validasi peran ke sheet Users di tiap request). Uji: user di-hapus → token lamanya langsung `UNAUTHORIZED`. |
+| R8 | 🟠 | Rate limit login (`:221`) tidak atomik (baca-lalu-tulis tanpa lock; permintaan paralel melewati batas 5) dan berbasis username saja, sehingga siapa pun bisa mengunci akun Superadmin. | Bungkus cek+naikkan hitungan dengan `LockService`; sediakan fungsi pemulihan yang dijalankan pemilik dari editor untuk menghapus kunci. |
+| R9 | 🟠 | S7 belum tuntas (`:628`): penerima hanya dicek `includes('@')` (bukan batasan ke email pemilik/allowlist), `htmlBody` tidak di-escape, penghitung batas global dan tidak atomik. | Penerima ∈ allowlist (email pemilik di Settings + daftar eksplisit); escape/sanitasi `htmlBody`; batas per-user di bawah lock. |
+| R10 | 🟠 | Checkout POS: metode bayar tanpa whitelist; metode "Piutang" tanpa pelanggan valid menghasilkan penjualan tanpa kas **dan** tanpa piutang; produk nonaktif tak ditolak; piutang dicocokkan lewat nama; tak ada batas jumlah baris/qty; penulisan beberapa langkah tanpa rollback (stok ditulis terakhir). | Whitelist metode dari `PaymentMethods`; tolak Piutang tanpa `customerId` valid; tolak produk `status` nonaktif; batasi (mis. ≤ 100 baris, qty ≤ batas wajar); jika langkah tengah gagal, kembalikan baris yang sudah ditulis atau tulis stok lebih dulu. |
+| R11 | 🟡 | Regresi: `getRiwayatHariIni` (`:1415`) dan `getRingkasanDashboard` (`:1872`) membaca kolom `items` yang kini tak ada; riwayat dan log dashboard POS menampilkan **"0 item"** untuk transaksi baru. | Gabungkan dari `SalesOrderItems` (seperti `getSalesOrders`). |
+| R12 | 🟡 | `ino_setting_users` masih dipersist ke `localStorage` (`App.tsx:593`), termasuk hash PIN user yang baru diketik. S5 meminta ini dihapus pada mode GAS. | Pada mode GAS jangan simpan daftar user ke `localStorage`; kosongkan `pin` dari state setelah `saveUser` berhasil. |
+| R13 | 🟡 | `index_ERP_GAS.html` (3 Okt) adalah **frontend lama** tanpa token; build terbaru ada di `dist/index.html` (11 Okt). Men-deploy yang lama ke GAS yang baru → semua panggilan `UNAUTHORIZED`. | Satu perintah build yang menghasilkan berkas siap-tempel ke GAS (atau hapus `index_ERP_GAS.html` dan dokumentasikan memakai `dist/index.html`). |
+| R14 | 🟢 | Header `Code_ERP.gs` masih menyebut "Read endpoints tetap terbuka"; `checkApiToken_`, `saveProduct_`, `decrementStock_` kode mati; `doGet` POS memakai `XFrameOptionsMode.ALLOWALL` (clickjacking); `saveUser` tanpa whitelist peran dan tanpa pengaman terhadap hilangnya Superadmin terakhir; `deleteUser`/`resetPin` tanpa lock dan tanpa `_AuditLog`. | Perbarui komentar, hapus kode mati, ganti ke `DEFAULT`, whitelist peran ∈ {Superadmin, Admin, Kasir}, tolak penghapusan/penurunan Superadmin terakhir. |
+
+Catatan react-doctor: 15 temuannya hampir seluruhnya artefak (14 "duplikat JSX" karena `src_backup/App.tsx` salinan `src/App.tsx`; 1 sink HTML di `temp.js`). Selesaikan lewat W4.1, bukan perbaikan kode. Alat ini tidak melaporkan masalah hooks/state pada `src/App.tsx` yang 9.460 baris, jadi **jangan dijadikan bukti kesehatan kode**.
 
 ### Fase 2 — Integritas data
 
@@ -240,28 +266,49 @@ Prinsip jujur: Google Sheets **tidak bisa** dibuat benar-benar tak-terubah bagi 
 | B6 | `kasir`/`operator` diambil dari sesi login (`App.tsx:3218,3332`). | — |
 | B7 | **Alur PO & pembayaran** (DEC-06): Pesan → Rilis → Terima → Bayar. Pembayaran peristiwa tersendiri dengan tanggal opsional dan status Sudah/Belum. Kotak centang **'Sudah dibayar'** (+ tanggal) saat membuat PO untuk PO bayar langsung → kas keluar dicatat saat itu. Hutang timbul saat **diterima** untuk sisa yang belum dibayar. Hapus pencatatan kas/hutang otomatis saat rilis di `processSavePO` (`App.tsx:2958`). | DEC-06 |
 
-### Fase 3b — Redesign Dashboard (setelah D6, B2, B1 selesai agar angkanya benar)
+### Fase 3b — Dashboard "Command Center" (satu halaman)
 
-> **Status: usulan awal.** Pemilik akan membahas desain lebih lanjut. Jangan dikerjakan sebelum desain disetujui; DB1–DB6 hanya acuan kebutuhan.
+> **Status: menunggu DEC-17.** Pemilik menolak rancangan desain buatan sendiri; dashboard dibangun dari **template/blok yang sudah ada** (Lampiran C). Kerjakan setelah D6, B2, B1 selesai agar angkanya benar.
 
-Catatan: laba = **Laba Kotor** (DEC-14). Kondisi sekarang: satu halaman panjang (`App.tsx:3745`, ±1.000 baris), grafik tren hanya 2 garis (Penjualan, Pembelian; tanpa Laba Kotor). `recharts` sudah terpasang → **tidak ada dependency baru**. Pecah menjadi komponen terpisah di `src/tabs/dashboard/` (hanya dashboard; tidak menyentuh bagian lain `App.tsx`).
+**Prinsip pemilik:** dashboard adalah inti aplikasi. Satu halaman besar yang merangkum **kejadian, indikator, dan prediksi**; semuanya bisa ditemukan di sini tanpa berpindah tab. *Zoom in/out adalah urusan pemilik*: satu filter periode global, klik widget → rincian, ekspor CSV. Tidak ada tab; navigasi cukup tautan lompat ke bagian.
 
-Aturan umum: satu filter periode (Hari ini / 7 hari / Bulan ini / Custom) berlaku untuk semua tab; satu definisi per angka, dihitung lewat fungsi murni di `src/domain/metrics.ts` (dites di W4.4); dokumen Void tidak pernah ikut; layout nyaman di tablet landscape (nav tab bisa discroll); tiap grafik punya tooltip dan angka persen yang terbaca tanpa hover; kondisi kosong ditangani.
+| Bagian | Isi |
+|---|---|
+| A. Indikator | Baris KPI: Penjualan, Pembelian, Laba Kotor (+ margin %), jumlah & rata-rata nilai transaksi, Piutang, Hutang, Nilai persediaan, Saldo per akun (total + rincian). Tiap KPI: selisih vs periode lalu, sparkline, dan **cakupan** (akun/periode apa saja yang termasuk). |
+| B. Tren & komposisi | Line chart 3 seri (Penjualan, Pembelian, Laba Kotor); bar Penjualan vs Pembelian; komposisi per metode bayar/akun dan per kategori produk. |
+| C. Piutang & Hutang | Bar 100% Lunas vs Belum dengan persen dan nominal; aging; tabel terlambat. |
+| D. Produk | Ranking Top/Bottom (omzet/laba/qty/margin %), slow moving, stok menipis. |
+| E. Kas & akun | Saldo per akun, arus masuk vs keluar, hasil Cek Saldo terakhir. |
+| F. **Prediksi** | Deterministik dan dapat dijelaskan (tanpa ML): (1) estimasi habis stok per SKU = stok ÷ rata-rata penjualan harian 28 hari; (2) proyeksi kas 30/60/90 hari dari piutang dan hutang yang jatuh tempo; (3) run-rate penjualan bulan berjalan vs bulan lalu. Tiap prediksi menampilkan **metode dan dasar datanya** dan "data belum cukup" bila kurang dari ambang; tidak pernah disajikan sebagai fakta. |
+| G. Kejadian | Aliran transaksi terbaru, void (Void Log), penerimaan PO, pembayaran, anomali (HPP tak ditemukan, selisih rekonsiliasi D7, status integritas T3). |
 
-| ID | Tab | Isi & jenis visual |
-|---|---|---|
-| DB1 | **Ringkasan** | Baris KPI: Penjualan, Pembelian, Laba Kotor, Laba Kotor, Saldo Kas, Piutang, Hutang — masing-masing dengan selisih % vs periode sebelumnya. **Line chart 3 garis**: Penjualan, Pembelian, Laba Kotor per hari/minggu/bulan. Panel peringatan (jatuh tempo, stok menipis, selisih rekonsiliasi D7). |
-| DB2 | **Penjualan & Pembelian** | Bar berkelompok Penjualan vs Pembelian per periode; donut komposisi penjualan per metode bayar; ringkasan jumlah transaksi, rata-rata nilai transaksi. |
-| DB3 | **Piutang & Hutang** | Untuk AR dan AP masing-masing: **bar 100% bertumpuk Lunas vs Belum Dibayar dengan persen dan nominal** terlihat jelas; bar *aging* (belum jatuh tempo, 1–30, 31–60, >60 hari); tabel 10 terbesar/terlambat dengan tombol ke dokumennya. |
-| DB4 | **Produk** | Ranking (bar horizontal Top 10) dengan toggle *omzet / laba / qty / margin %*; tabel *slow moving* (tak terjual N hari) dan stok menipis; ranking pelanggan untuk laba. |
-| DB5 | **Saldo Akun** | Kartu per akun (Kas Kasir, BCA, Mandiri, BNI, …) berisi saldo sistem, ringkasan total Tunai vs Bank; bar kas masuk vs keluar per periode; tabel mutasi terakhir; tombol **Cek Saldo** dan riwayat hasil cek (B8). |
-| DB6 | **Kontrol** | Void Log per kasir/hari (jumlah & nilai), selisih rekonsiliasi (D7), transaksi dengan HPP tak ditemukan. Khusus Admin+. |
-
-*Terima*: (a) 6 tab tampil, berpindah tanpa memuat ulang data; (b) grafik tren memiliki 3 garis dan nilainya cocok dengan tabel sumber pada Sheet uji; (c) persen Lunas + Belum = 100% pada AR dan AP; (d) dokumen Void tidak mengubah angka apa pun di dashboard; (e) tampil benar pada lebar 768–1280 px; (f) peran Kasir tidak melihat Laba/HPP/Kontrol (DEC-10).
+*Terima*: (a) semua bagian ada di satu rute tanpa tab; (b) filter periode memengaruhi semua bagian; (c) tiap widget punya rincian dan ekspor CSV (J2); (d) angka cocok dengan tabel sumber pada Sheet uji (uji sampel); (e) dokumen Void tidak mengubah angka apa pun; (f) peran Kasir tidak melihat dashboard; (g) pemilik meninjau hasilnya pada data contoh dan menyetujui sebelum dianggap selesai.
 
 ### Fase 3c — Petty Cash (DITUNDA, belum dikerjakan)
 
 Modul **terpisah** (sheet dan tab sendiri) untuk kas kecil; tidak boleh mengubah logika penjualan/pembelian. Satu-satunya titik sambung: isi ulang kas kecil = transfer dari sebuah akun (mengurangi saldo akun itu); pengeluaran kecil mengurangi saldo petty cash dengan kategori dan catatan. **Belum ada spesifikasi detail; Antigravity tidak mengerjakannya** sampai pemilik memberi spesifikasi tambahan. Entri manual di `CashLedgerTab` ditinjau ulang saat modul ini dirancang, bukan sebelumnya.
+
+### Fase 3d — Internasionalisasi & design system (usulan, menunggu persetujuan desain)
+
+Syarat penggunaan internasional. Saat ini: 144 pemakaian `'id-ID'`, 133 literal `"Rp "`, zona `GMT+8` ditulis langsung di server, 22 `toISOString()` untuk tanggal bisnis, dan `<html lang="en">` sementara teks UI berbahasa Indonesia.
+
+| ID | Pekerjaan |
+|---|---|
+| I1 | Satu modul `src/i18n/format.ts` (`formatMoney`, `formatNumber`, `formatDate`) berbasis `Intl.NumberFormat`/`Intl.DateTimeFormat`; locale dan **kode mata uang ISO** dibaca dari Settings. Ganti seluruh `"Rp "` dan `'id-ID'`. |
+| I2 | Zona waktu perusahaan di Settings; server memakai zona itu (bukan `GMT+8` tetap) dan klien memakai helper tanggal lokal (D8). |
+| I3 | Pisahkan teks UI ke katalog bahasa (mulai EN + ID) tanpa library baru kecuali disetujui; pasang `lang` dan `dir` pada `<html>` sesuai bahasa terpilih. |
+| I4 | CSS memakai properti logis (Tailwind 4: `ms-*`/`me-*`/`ps-*`/`pe-*`/`text-start`) agar siap RTL; tak ada lebar tetap pada label/tombol (sediakan ≥ 30% ruang untuk terjemahan). |
+| I5 | Terapkan template/komponen yang dipilih pemilik (Lampiran C) secara konsisten; tidak membuat gaya visual baru sendiri. |
+
+### Fase 3e — Impor/ekspor CSV
+
+| ID | Pekerjaan |
+|---|---|
+| J1 | **Impor CSV melalui jalur posting yang sama dengan transaksi normal** (bukan menulis langsung ke sheet), agar stok, piutang/hutang, kas, dan hash tetap konsisten. Tipe: Produk, Pelanggan, Supplier (master) dan Penjualan, Pembelian (dokumen + item). Wajib **pratinjau/dry-run** sebelum commit; validasi di server per baris (tipe, wajib isi, SKU ada, qty > 0, total dihitung ulang server, tanggal valid pada zona perusahaan); laporan error per baris yang bisa diunduh; kolom `externalRef` untuk idempotensi (impor ulang berkas yang sama tidak menggandakan); satu dokumen = semua-atau-tidak-sama-sekali; batas ukuran (mis. 5.000 baris/5 MB) diproses per batch di bawah lock; tercatat di `_AuditLog` (siapa, kapan, nama berkas, jumlah sukses/gagal). Peran: Admin+ untuk transaksi, Superadmin untuk master. Sediakan **template CSV unduhan** per tipe dengan header baku dan versi; format eksplisit (UTF-8, tanggal ISO 8601, titik desimal; deteksi pemisah `,`/`;`). Pakai parser yang sudah ada (`xlsx` dapat membaca CSV) atau parser kecil buatan sendiri; jangan menambah dependency. |
+| J2 | **Ekspor CSV** dari setiap tabel/widget dashboard (data persis yang tampil). Netralkan injeksi rumus: sel yang diawali `=`, `+`, `-`, `@` diawali tanda kutip tunggal. |
+| J3 | Penggabungan dengan "local data entry tool for Excel" milik pemilik: **belum ada spesifikasi**. Kontraknya adalah format CSV J1. Antigravity tidak membangun integrasi langsung sebelum pemilik menyediakan struktur kolom/berkas contoh. |
+
+*Terima*: impor berkas contoh 500 baris menghasilkan stok/piutang/kas yang benar; mengimpor ulang berkas yang sama tidak mengubah apa pun; baris rusak ditolak dengan pesan jelas tanpa membatalkan baris sehat; `GO_LIVE_LOCKED` tidak menghalangi impor transaksi yang lewat endpoint posting, tetapi menghalangi impor master oleh non-Superadmin.
 
 ### Fase 4 — Kebersihan & uji
 
@@ -339,3 +386,18 @@ Selesai bila **semua** terpenuhi pada deployment uji:
 - **Performa:** `getSheetData` membaca seluruh sheet di tiap panggilan. Cukup untuk volume kecil; melambat bila transaksi mencapai puluhan ribu baris. `verifyIntegrity()` juga membaca seluruh baris (jalankan harian, bukan per transaksi). Jika melambat, evaluasi arsip per tahun (bukan migrasi DB).
 - **Urutan penyerahan ke Antigravity:** satu fase per sesi; tinjau laporan tiap fase sebelum lanjut. Fase 3b (dashboard) dan 3c (petty cash) tidak dikerjakan tanpa desain/spesifikasi tambahan dari pemilik.
 - **Belum teruji di runtime:** semua temuan berasal dari pembacaan kode; Antigravity wajib memverifikasi pada salinan Sheet sebelum mengubah perilaku.
+
+
+## 10. Lampiran C — Strategi dashboard: pakai template yang sudah ada
+
+**Keputusan pemilik (18 Okt 2026):** arah desain buatan agent (“Ledger Instrument”) **ditolak**. Alasan: dashboard buatan AI yang pemilik amati kurang maksimal. Dashboard harus berangkat dari template/blok yang sudah teruji, lalu disesuaikan pada data aplikasi ini.
+
+**Kandidat (hasil riset; verifikasi lisensi dan kompatibilitas di repo asli sebelum memakai):**
+
+| Kandidat | Catatan |
+|---|---|
+| **Tremor (komponen + Blocks)** — rekomendasi utama | Open source (MIT), model salin-tempel, berbasis Tailwind + Radix + Recharts. Menyediakan KPI card, spark chart, tracker, bar progres, filter bar, dan 300+ blok dashboard gratis. Paling dekat dengan kebutuhan "satu halaman penuh indikator". |
+| shadcn/ui charts + blok dashboard / `shadcn-admin` | MIT, Vite + React 19 + Tailwind 4, grafik berbasis Recharts. Cadangan bila Tremor bermasalah. |
+| TailAdmin (versi gratis) | MIT, React 19 + Tailwind 4, tetapi hanya 1 dashboard bergaya e-commerce umum; hanya sebagai sumber komponen UI, bukan dashboard. |
+
+**Aturan penerapan:** ambil hanya blok yang dipakai; catat lisensi dan asal blok di `NOTICE`/README; **periksa kecocokan versi** (aplikasi memakai Recharts 3.9 dan Tailwind 4; bila blok mengharuskan versi lain, pakai tata letak sebagai acuan dan tulis ulang dengan komponen yang ada); daftar dependensi tambahan (Radix, `tailwind-merge`, dll.) dan batasi seminimal mungkin; jangan menambah gaya visual sendiri. Pemilik memilih template setelah melihat pratinjaunya (DEC-17); Antigravity tidak memulai Fase 3b/3d-I5 sebelum itu.

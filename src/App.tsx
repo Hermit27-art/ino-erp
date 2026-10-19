@@ -19,7 +19,7 @@ import { getCustomers, saveCustomer, deleteCustomer, saveAllCustomers } from "./
 import { getSuppliers, saveSupplier, deleteSupplier, saveAllSuppliers } from "./dataService";
 import { getOpnameLog, appendOpnameLog, saveAllOpnameLog } from "./dataService";
 import { getCashLedger, saveCashEntry, deleteCashEntry, saveAllCashLedger } from "./dataService";
-import { getSalesOrders, saveSalesOrder, deleteSalesOrder, saveAllSalesOrders, fetchSettings, saveSettingsToGas } from './dataService';
+import { getSalesOrders, saveSalesOrder, deleteSalesOrder, saveAllSalesOrders, fetchSettings, saveSettingsToGas, getBootstrapStatus, initialSetup } from './dataService';
 import { getConsignments, saveConsignment, deleteConsignment, saveAllConsignments } from './dataService';
 import {
   ShoppingCart, LayoutDashboard,
@@ -455,6 +455,7 @@ export default function App() {
   // ponytail: di localhost paksa false agar bisa langsung masuk tanpa login saat testing
   const [isLoginActive, setIsLoginActive] = useState<boolean>(() => isGasEnv_ ? true : false);
   const [isSetupMode, setIsSetupMode] = useState<boolean>(false);
+  const [isSystemInitialized, setIsSystemInitialized] = useState<boolean>(true);
   const [loginUsername, setLoginUsername] = useState<string>(() => getLocalStorage('ino_login_username', ''));
   const [loginPassword, setLoginPassword] = useState<string>(() => getLocalStorage('ino_login_password', ''));
 
@@ -500,10 +501,8 @@ export default function App() {
     { prefix: 'SVC', label: 'Service / Jasa' }
   ]));
 
-  const [settingUsersList, setSettingUsersList] = useState<any[]>(() => getLocalStorage('ino_setting_users', [
-    { email: 'admin@toko.com', nama: 'Administrator', role: 'Admin', pin: '1234' },
-    { email: 'kasir@toko.com', nama: 'Kasir 1', role: 'Kasir', pin: '5678' }
-  ]));
+  // S5: Hapus default hardcoded PINs
+  const [settingUsersList, setSettingUsersList] = useState<any[]>(() => getLocalStorage('ino_setting_users', []));
 
   const [settingSubTab, setSettingSubTab] = useState<string>('profil');
 
@@ -542,17 +541,19 @@ export default function App() {
   useEffect(() => {
     const syncSettingsFromGas = async () => {
       try {
+        const bootstrap = await getBootstrapStatus();
+        setIsSystemInitialized(bootstrap.initialized);
+
         const settings = await fetchSettings();
         if (settings && settings.length > 0) {
           settings.forEach(item => {
             const val = item.value;
             switch(item.key) {
-              case 'login_username': setLoginUsername(val); break;
-              case 'login_password': setLoginPassword(val); break;
               case 'nama_toko': setNamaToko(val); break;
               case 'tipe_bisnis': setTipeBisnis(val); break;
               case 'alamat_toko': setAlamatToko(val); break;
               case 'telp_toko': setTelpToko(val); break;
+              case 'kota_toko': setKotaToko(val); break;
               case 'mata_uang': setMataUang(val); break;
               case 'ppn_rate': setPpnRate(parseFloat(val) || 0.11); break;
               case 'metode_hpp_default': setMetodeHppDefault(val); break;
@@ -3373,17 +3374,23 @@ export default function App() {
         // Sinkronisasi ke server GAS
         triggerToast('Menyimpan ke server database...', 'success');
         try {
-          await saveSettingsToGas([
-            { key: 'login_username', value: email },
-            { key: 'login_password', value: hashed },
-            { key: 'nama_toko', value: fd.get('namaToko') as string },
-            { key: 'tipe_bisnis', value: fd.get('tipeBisnis') as string },
-            { key: 'alamat_toko', value: fd.get('alamat') as string },
-            { key: 'telp_toko', value: fd.get('telp') as string },
-            { key: 'mata_uang', value: fd.get('mataUang') as string },
-            { key: 'ppn_rate', value: fd.get('ppn') as string },
-            { key: 'metode_hpp_default', value: fd.get('hpp') as string }
-          ]);
+          const res = await initialSetup({
+            superadminEmail: email,
+            superadminPasswordHash: hashed,
+            superadminNama: 'Superadmin',
+            settings: {
+              nama_toko: fd.get('namaToko') as string,
+              tipe_bisnis: fd.get('tipeBisnis') as string,
+              alamat_toko: fd.get('alamat') as string,
+              telp_toko: fd.get('telp') as string,
+              mata_uang: fd.get('mataUang') as string,
+              ppn_rate: fd.get('ppn') as string,
+              metode_hpp_default: fd.get('hpp') as string
+            }
+          });
+          if (!res.ok) {
+            return triggerToast('Gagal setup: ' + res.message, 'error');
+          }
           triggerToast('Setup Berhasil! Memuat ulang sistem...', 'success');
           setTimeout(() => window.location.reload(), 1500);
         } catch (error) {
@@ -3552,20 +3559,21 @@ export default function App() {
             >
               {isLoggingIn ? 'Memverifikasi...' : 'Masuk'}
             </button>
-            <div className="mt-4 pt-4 border-t border-gray-200">
-              <button
-                type="button"
-                onClick={() => {
-                  if (window.confirm('PERINGATAN: Tindakan ini akan menghapus seluruh pengaturan di memori browser ini dan membuka layar Setup. Anda yakin?')) {
-                    localStorage.clear();
-                    setIsSetupMode(true);
-                  }
-                }}
-                className="w-full flex justify-center py-2 px-4 border border-red-300 rounded-md shadow-sm text-sm font-medium text-red-600 bg-white hover:bg-red-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500"
-              >
-                Buat Perusahaan Baru (Reset & Setup)
-              </button>
-            </div>
+            {!isSystemInitialized && (
+              <div className="mt-4 pt-4 border-t border-gray-200">
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (window.confirm('PERINGATAN: Tindakan ini akan membuka layar Setup awal sistem. Anda yakin?')) {
+                      setIsSetupMode(true);
+                    }
+                  }}
+                  className="w-full flex justify-center py-2 px-4 border border-red-300 rounded-md shadow-sm text-sm font-medium text-red-600 bg-white hover:bg-red-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500"
+                >
+                  Buat Perusahaan Baru (Setup Awal)
+                </button>
+              </div>
+            )}
           </form>
         </div>
       </div>
@@ -6840,6 +6848,7 @@ export default function App() {
               loginUsername={loginUsername} setLoginUsername={setLoginUsername}
               loginPassword={loginPassword} setLoginPassword={setLoginPassword}
               settingUsersList={settingUsersList} setSettingUsersList={setSettingUsersList}
+              currentUser={currentUser}
               setIsLoggedIn={setIsLoggedIn}
               triggerToast={triggerToast}
             />

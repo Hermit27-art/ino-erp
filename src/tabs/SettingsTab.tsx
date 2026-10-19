@@ -1,7 +1,12 @@
 import React, { useState } from 'react';
 import { Settings, DollarSign, Layers, Lock, Trash2 } from 'lucide-react';
 import { hashPassword } from '../authService';
-import { getProducts, saveAllProducts, getSalesOrders, saveAllSalesOrders, getPurchaseOrders, saveAllPurchaseOrders, getCustomers, saveAllCustomers, getSuppliers, saveAllSuppliers, saveSettingsToGas } from '../dataService';
+import { 
+  getProducts, saveAllProducts, getSalesOrders, saveAllSalesOrders, 
+  getPurchaseOrders, saveAllPurchaseOrders, getCustomers, saveAllCustomers, 
+  getSuppliers, saveAllSuppliers, saveSettingsToGas,
+  isGasEnvironment, listUsersFromGas, saveUserToGas, deleteUserFromGas 
+} from '../dataService';
 
 export interface SettingsTabProps {
   namaToko: string; setNamaToko: (v: string) => void;
@@ -18,6 +23,7 @@ export interface SettingsTabProps {
   loginUsername: string; setLoginUsername: (v: string) => void;
   loginPassword: string; setLoginPassword: (v: string) => void;
   settingUsersList: any[]; setSettingUsersList: (v: any[]) => void;
+  currentUser?: any;
   setIsLoggedIn: (v: boolean) => void;
   triggerToast: (msg: string, type: string) => void;
 }
@@ -37,9 +43,18 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({
   loginUsername, setLoginUsername,
   loginPassword, setLoginPassword,
   settingUsersList, setSettingUsersList,
+  currentUser,
   setIsLoggedIn, triggerToast
 }) => {
   const [settingSubTab, setSettingSubTab] = useState<string>('profil');
+
+  React.useEffect(() => {
+    if (isGasEnvironment()) {
+      listUsersFromGas().then(users => {
+        if (users && users.length > 0) setSettingUsersList(users);
+      }).catch(err => console.error('Gagal memuat user tim:', err));
+    }
+  }, []);
   const [importJson, setImportJson] = useState('');
   const [importTarget, setImportTarget] = useState('produk');
   const [importStep, setImportStep] = useState<1 | 2>(1);
@@ -62,7 +77,7 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({
         {[
           { id: 'profil', label: '🏪 Profil Toko' },
           { id: 'user', label: '👥 Pengguna & Sandi' },
-          { id: 'dev', label: '🔌 Celah Import' }
+          ...(currentUser?.role === 'Superadmin' ? [{ id: 'dev', label: '🔌 Celah Import' }] : [])
         ].map(tab => (
           <button
             key={tab.id}
@@ -432,7 +447,18 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({
                       </td>
                       <td className="p-2 text-center">
                         <button
-                          onClick={() => setSettingUsersList(settingUsersList.filter((_, i) => i !== idx))}
+                          onClick={async () => {
+                            const usr = settingUsersList[idx];
+                            if (isGasEnvironment() && usr && usr.email) {
+                              try {
+                                await deleteUserFromGas(usr.email);
+                                triggerToast('User ' + usr.email + ' dihapus dari database.', 'success');
+                              } catch (err: any) {
+                                return triggerToast('Gagal menghapus user: ' + err.message, 'error');
+                              }
+                            }
+                            setSettingUsersList(settingUsersList.filter((_, i) => i !== idx));
+                          }}
                           className="text-danger hover:text-danger p-1 rounded-card hover:bg-danger/10"
                         >
                           <Trash2 size={14} />
@@ -460,8 +486,6 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({
                 triggerToast('Menyimpan ke awan...', 'info');
                 try {
                   await saveSettingsToGas([
-                    { key: 'login_username', value: loginUsername },
-                    { key: 'login_password', value: loginPassword },
                     { key: 'nama_toko', value: namaToko },
                     { key: 'tipe_bisnis', value: tipeBisnis },
                     { key: 'alamat_toko', value: alamatToko },
@@ -471,6 +495,12 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({
                     { key: 'ppn_rate', value: ppnRate.toString() },
                     { key: 'metode_hpp_default', value: metodeHppDefault }
                   ]);
+                  // S5: Sinkronkan user tim ke sheet Users di GAS
+                  if (isGasEnvironment()) {
+                    for (const u of settingUsersList) {
+                      if (u.email) await saveUserToGas(u);
+                    }
+                  }
                   triggerToast('Pengaturan disinkronkan ke semua perangkat!', 'success');
                 } catch(e: any) {
                   triggerToast('Gagal sinkronisasi: ' + e.message, 'error');
@@ -497,7 +527,7 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({
       </div>
       
       {/* TAB CONTENT: DEV IMPORT */}
-      {settingSubTab === 'dev' && (
+      {settingSubTab === 'dev' && currentUser?.role === 'Superadmin' && (
         <div className="p-5 space-y-6 animate-fade-in">
           <div className="bg-white border border-border rounded-card p-5 shadow-xs space-y-4">
             <h3 className="text-sm font-black text-primary uppercase tracking-wider flex items-center gap-2 border-b pb-2">
